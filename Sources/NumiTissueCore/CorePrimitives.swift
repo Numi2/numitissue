@@ -176,10 +176,14 @@ public struct MultiRateClock: Sendable {
     public private(set) var transactionIndex: UInt64
     public let schedule: SchedulerConfiguration
 
-    public init(schedule: SchedulerConfiguration, start: TissueTime = .init()) {
+    public init(
+        schedule: SchedulerConfiguration,
+        start: TissueTime = .init(),
+        transactionIndex: UInt64 = 0
+    ) {
         self.schedule = schedule
         self.time = start
-        self.transactionIndex = 0
+        self.transactionIndex = transactionIndex
     }
 
     public mutating func advanceCommittedTransaction() {

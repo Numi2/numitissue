@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "NumiTissueCore", targets: ["NumiTissueCore"]),
         .library(name: "NumiTissueModels", targets: ["NumiTissueModels"]),
         .library(name: "NumiTissueMetal", targets: ["NumiTissueMetal"]),
+        .library(name: "NumiTissueReference", targets: ["NumiTissueReference"]),
         .executable(name: "numitissue", targets: ["NumiTissueCLI"])
     ],
     targets: [
@@ -21,6 +22,11 @@ let package = Package(
         .target(
             name: "NumiTissueModels",
             dependencies: ["NumiTissueCore"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "NumiTissueReference",
+            dependencies: ["NumiTissueCore", "NumiTissueModels"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .target(
@@ -49,6 +55,7 @@ let package = Package(
             dependencies: [
                 "NumiTissueCore",
                 "NumiTissueModels",
+                "NumiTissueReference",
                 "NumiTissueMetal",
                 "NumiTissueIO",
                 "NumiTissueWetware",

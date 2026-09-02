@@ -57,9 +57,7 @@ public struct TileConfiguration: Codable, Sendable, Hashable {
 
     public func validate() throws {
         guard edgeMicrometers > 0 else { throw ConfigurationError.invalidValue("tile.edgeMicrometers") }
-        guard fieldGridEdge >= 4 && fieldGridEdge.isPowerOfTwo else {
-            throw ConfigurationError.invalidValue("tile.fieldGridEdge must be a power of two >= 4")
-        }
+        guard fieldGridEdge >= 4 && fieldGridEdge.isPowerOfTwo else { throw ConfigurationError.invalidValue("tile.fieldGridEdge must be a power of two >= 4") }
         guard maximumCells > 0, maximumCompartments > 0, maximumExplicitSynapses > 0 else {
             throw ConfigurationError.invalidValue("tile capacities must be positive")
         }

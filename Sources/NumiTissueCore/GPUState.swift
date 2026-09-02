@@ -91,13 +91,13 @@ public struct TileFlags: OptionSet, Sendable, Hashable {
 @frozen
 public struct GPUTileHeader: Sendable {
     public var coordinate: Int4
-    public var counts0: UInt4
-    public var counts1: UInt4
-    public var offsets0: UInt4
-    public var offsets1: UInt4
-    public var activity: Float4
-    public var epochs: UInt4
-    public var flags: UInt4
+    public var counts0: UInt4       // cells, segments, compartments, synapses
+    public var counts1: UInt4       // microdomains, routes, local events, remote events
+    public var offsets0: UInt4      // cells, segments, compartments, synapses
+    public var offsets1: UInt4      // fields, microdomains, routes, events
+    public var activity: Float4     // electrical, structural, molecular, uncertainty
+    public var epochs: UInt4        // topology, state, committed transaction low/high
+    public var flags: UInt4         // flags, validation, overflow, reserved
 
     public init(coordinate: TileCoordinate) {
         self.coordinate = coordinate.packed
@@ -117,8 +117,8 @@ public struct GPUCellState: Sendable {
     public var orientation: Float4
     public var shapeVolume: Float4
     public var velocityMotility: Float4
-    public var metabolism: Float4
-    public var development: Float4
+    public var metabolism: Float4       // ATP, oxygen stress, glucose stress, damage
+    public var development: Float4      // age, cycle progress, differentiation, apoptosis
     public var regulatory0: Float4
     public var regulatory1: Float4
     public var regulatory2: Float4
@@ -127,36 +127,25 @@ public struct GPUCellState: Sendable {
     public var regulatory5: Float4
     public var regulatory6: Float4
     public var regulatory7: Float4
-    public var identity0: UInt4
-    public var identity1: UInt4
+    public var identity0: UInt4         // cell id low/high, lineage low/high
+    public var identity1: UInt4         // kind, developmental state, fidelity, flags
 
     public init(id: CellID, lineage: LineageID, kind: CellKind, position: Float4, radius: Float, fidelity: FidelityLevel) {
         self.positionRadius = Float4(position.x, position.y, position.z, radius)
         self.orientation = Float4(0, 0, 0, 1)
-        self.shapeVolume = Float4(radius, radius, radius, 4.0 / 3.0 * Float.pi * radius * radius * radius)
+        self.shapeVolume = Float4(radius, radius, radius, 4.0 / 3.0 * .pi * radius * radius * radius)
         self.velocityMotility = .zero
         self.metabolism = Float4(1, 0, 0, 0)
         self.development = .zero
-        self.regulatory0 = .zero
-        self.regulatory1 = .zero
-        self.regulatory2 = .zero
-        self.regulatory3 = .zero
-        self.regulatory4 = .zero
-        self.regulatory5 = .zero
-        self.regulatory6 = .zero
-        self.regulatory7 = .zero
+        self.regulatory0 = .zero; self.regulatory1 = .zero
+        self.regulatory2 = .zero; self.regulatory3 = .zero
+        self.regulatory4 = .zero; self.regulatory5 = .zero
+        self.regulatory6 = .zero; self.regulatory7 = .zero
         self.identity0 = UInt4(
-            UInt32(truncatingIfNeeded: id.rawValue),
-            UInt32(truncatingIfNeeded: id.rawValue >> 32),
-            UInt32(truncatingIfNeeded: lineage.rawValue),
-            UInt32(truncatingIfNeeded: lineage.rawValue >> 32)
+            UInt32(truncatingIfNeeded: id.rawValue), UInt32(truncatingIfNeeded: id.rawValue >> 32),
+            UInt32(truncatingIfNeeded: lineage.rawValue), UInt32(truncatingIfNeeded: lineage.rawValue >> 32)
         )
-        self.identity1 = UInt4(
-            UInt32(kind.rawValue),
-            UInt32(DevelopmentalState.immature.rawValue),
-            UInt32(fidelity.rawValue),
-            0
-        )
+        self.identity1 = UInt4(UInt32(kind.rawValue), UInt32(DevelopmentalState.immature.rawValue), UInt32(fidelity.rawValue), 0)
     }
 }
 
@@ -164,9 +153,9 @@ public struct GPUCellState: Sendable {
 public struct GPUNeuriteSegment: Sendable {
     public var startRadius: Float4
     public var endRadius: Float4
-    public var electrical: Float4
-    public var topology: UInt4
-    public var identity: UInt4
+    public var electrical: Float4       // axial conductance, capacitance, myelin, energy
+    public var topology: UInt4          // parent, first child, child count, compartment
+    public var identity: UInt4          // segment id low/high, cell local index, kind/flags
 
     public init(start: Float4, end: Float4, radius: Float, parent: UInt32, cellIndex: UInt32, kind: SegmentKind) {
         self.startRadius = Float4(start.x, start.y, start.z, radius)
@@ -179,13 +168,13 @@ public struct GPUNeuriteSegment: Sendable {
 
 @frozen
 public struct GPUCompartmentState: Sendable {
-    public var voltageAndCurrent: Float4
-    public var passive: Float4
-    public var gates0: Float4
-    public var gates1: Float4
-    public var linearSystem: Float4
-    public var topology: UInt4
-    public var mechanism: UInt4
+    public var voltageAndCurrent: Float4    // V, injected I, synaptic I, calcium
+    public var passive: Float4              // capacitance, leak g, leak E, axial-to-parent
+    public var gates0: Float4               // m, h, n, p
+    public var gates1: Float4               // q, r, s, auxiliary
+    public var linearSystem: Float4         // diagonal, rhs, parent coefficient, solution
+    public var topology: UInt4              // parent, first child, child count, level
+    public var mechanism: UInt4             // mechanism table, segment, neuron, flags
 
     public init(voltageMillivolts: Float = -65) {
         self.voltageAndCurrent = Float4(voltageMillivolts, 0, 0, 5e-5)
@@ -200,10 +189,10 @@ public struct GPUCompartmentState: Sendable {
 
 @frozen
 public struct GPUSynapseState: Sendable {
-    public var routing: UInt4
-    public var kinetics: Float4
-    public var plasticity0: Float4
-    public var plasticity1: Float4
+    public var routing: UInt4          // post compartment, presyn route, last event tick, type/flags
+    public var kinetics: Float4        // g, decay factor, reversal, weight
+    public var plasticity0: Float4     // u, x, eligibility, consolidation
+    public var plasticity1: Float4     // pre trace, post trace, structural score, homeostatic scale
 
     public init(postCompartment: UInt32, route: UInt32, receptor: ReceptorKind, weight: Float) {
         self.routing = UInt4(postCompartment, route, 0, UInt32(receptor.rawValue))
@@ -225,9 +214,7 @@ public struct GPUFieldVoxel: Sendable {
             self.channels1 = Float4(1, 0, 0, 1)
             self.channels2 = Float4(0, 0, 0, 1)
         } else {
-            self.channels0 = .zero
-            self.channels1 = .zero
-            self.channels2 = .zero
+            self.channels0 = .zero; self.channels1 = .zero; self.channels2 = .zero
         }
     }
 
@@ -249,8 +236,8 @@ public struct GPUFieldVoxel: Sendable {
 
 @frozen
 public struct GPUEvent: Sendable {
-    public var address: UInt4
-    public var payload: Float4
+    public var address: UInt4          // destination, source, tick, type/flags
+    public var payload: Float4         // amplitude and optional data
 
     public init(destination: UInt32, source: UInt32, tick: UInt32, type: UInt16, amplitude: Float) {
         self.address = UInt4(destination, source, tick, UInt32(type))
@@ -260,10 +247,10 @@ public struct GPUEvent: Sendable {
 
 @frozen
 public struct GPUMicrodomainHeader: Sendable {
-    public var countsAndOffsets0: UInt4
-    public var countsAndOffsets1: UInt4
-    public var coupling: UInt4
-    public var timeAndError: Float4
+    public var countsAndOffsets0: UInt4 // species count, reaction count, species offset, reaction offset
+    public var countsAndOffsets1: UInt4 // voxel count, diffusion edge count, edge offset, flags
+    public var coupling: UInt4          // cell, compartment, field voxel, solver mode
+    public var timeAndError: Float4     // local time, dt, error, propensity sum
 
     public init() {
         self.countsAndOffsets0 = .zero
@@ -293,7 +280,13 @@ public struct GPULongRangeRoute: Sendable {
     public var addressing: UInt4
     public var timing: Float4
 
-    public init(source: UInt32, destinationStart: UInt32, destinationCount: UInt32, delayTicks: UInt32, releaseProbability: Float = 1) {
+    public init(
+        source: UInt32,
+        destinationStart: UInt32,
+        destinationCount: UInt32,
+        delayTicks: UInt32,
+        releaseProbability: Float = 1
+    ) {
         self.addressing = UInt4(source, destinationStart, destinationCount, delayTicks)
         self.timing = Float4(releaseProbability, 0, 0, 0)
     }

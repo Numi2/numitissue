@@ -39,8 +39,11 @@ public enum NumiTissueBuild {
     public static let snapshotSchemaVersion: UInt32 = 1
     public static let gpuABIVersion: UInt32 = 1
 }
+import Foundation
 
-public protocol TissueIdentifier: RawRepresentable, Codable, Hashable, Sendable, Comparable, CustomStringConvertible where RawValue == UInt64 {}
+public protocol TissueIdentifier: RawRepresentable, Codable, Hashable, Sendable, Comparable, CustomStringConvertible where RawValue == UInt64 {
+    init(rawValue: UInt64)
+}
 
 public extension TissueIdentifier {
     var description: String { String(rawValue) }
@@ -59,6 +62,7 @@ public extension TissueIdentifier {
 @frozen public struct ElectrodeID: TissueIdentifier { public let rawValue: UInt64; public init(rawValue: UInt64) { self.rawValue = rawValue } }
 @frozen public struct TransactionID: TissueIdentifier { public let rawValue: UInt64; public init(rawValue: UInt64) { self.rawValue = rawValue } }
 
+/// Deterministically allocates stable identifiers from a namespace and monotonic local index.
 public struct IdentifierAllocator<ID: TissueIdentifier>: Sendable {
     private let namespace: UInt32
     private var nextLocal: UInt32
@@ -74,6 +78,7 @@ public struct IdentifierAllocator<ID: TissueIdentifier>: Sendable {
         return ID(rawValue: raw)
     }
 }
+import Foundation
 
 public typealias Float4 = SIMD4<Float>
 public typealias UInt4 = SIMD4<UInt32>
@@ -141,6 +146,7 @@ public func normalize3(_ value: Float4, fallback: Float4 = Float4(1, 0, 0, 0)) -
     guard magnitude > 1e-12 else { return fallback }
     return Float4(value.x / magnitude, value.y / magnitude, value.z / magnitude, 0)
 }
+import Foundation
 
 /// Time is represented as integer 25-microsecond ticks to avoid cross-device drift.
 @frozen
@@ -165,6 +171,36 @@ public struct TissueTime: Codable, Hashable, Sendable, Comparable, CustomStringC
 }
 
 @frozen
+public struct MultiRateClock: Sendable {
+    public private(set) var time: TissueTime
+    public private(set) var transactionIndex: UInt64
+    public let schedule: SchedulerConfiguration
+
+    public init(schedule: SchedulerConfiguration, start: TissueTime = .init()) {
+        self.schedule = schedule
+        self.time = start
+        self.transactionIndex = 0
+    }
+
+    public mutating func advanceCommittedTransaction() {
+        let ticks = UInt64(schedule.transactionMicroseconds) / TissueTime.quantumMicroseconds
+        time = time + ticks
+        transactionIndex &+= 1
+    }
+
+    public func isDue(periodMicroseconds: UInt64) -> Bool {
+        time.microseconds.isMultiple(of: periodMicroseconds)
+    }
+
+    public var cellMechanicsDue: Bool { isDue(periodMicroseconds: UInt64(schedule.cellMechanicsMicroseconds)) }
+    public var regulatoryDue: Bool { isDue(periodMicroseconds: UInt64(schedule.regulatoryMicroseconds)) }
+    public var structuralDue: Bool { isDue(periodMicroseconds: UInt64(schedule.structuralMicroseconds)) }
+}
+import Foundation
+
+/// Philox-4x32-10 counter-based random number generator.
+/// The matching Metal implementation uses the same constants and round order.
+@frozen
 public struct PhiloxCounter: Sendable, Hashable {
     public var x: UInt32
     public var y: UInt32
@@ -188,22 +224,24 @@ public struct PhiloxKey: Sendable, Hashable {
 }
 
 public enum CounterRandom {
-    static let multiplier0: UInt32 = 0xD251_1F53
-    static let multiplier1: UInt32 = 0xCD9E_8D57
-    static let weyl0: UInt32 = 0x9E37_79B9
-    static let weyl1: UInt32 = 0xBB67_AE85
+    @usableFromInline static let multiplier0: UInt32 = 0xD251_1F53
+    @usableFromInline static let multiplier1: UInt32 = 0xCD9E_8D57
+    @usableFromInline static let Weyl0: UInt32 = 0x9E37_79B9
+    @usableFromInline static let Weyl1: UInt32 = 0xBB67_AE85
 
+    @inlinable
     public static func generate(counter: PhiloxCounter, key initialKey: PhiloxKey) -> PhiloxCounter {
         var value = counter
         var key = initialKey
         for _ in 0..<10 {
             value = round(value, key: key)
-            key.x &+= weyl0
-            key.y &+= weyl1
+            key.x &+= Weyl0
+            key.y &+= Weyl1
         }
         return value
     }
 
+    @inlinable
     static func round(_ counter: PhiloxCounter, key: PhiloxKey) -> PhiloxCounter {
         let product0 = multiplier0.multipliedFullWidth(by: counter.x)
         let product1 = multiplier1.multipliedFullWidth(by: counter.z)
@@ -215,11 +253,14 @@ public enum CounterRandom {
         )
     }
 
+    @inlinable
     public static func uniform01(_ value: UInt32) -> Float {
+        // Open interval (0, 1); 24 high-quality mantissa bits.
         let mantissa = (value >> 8) | 1
         return Float(mantissa) * (1.0 / 16_777_217.0)
     }
 
+    @inlinable
     public static func normalPair(_ a: UInt32, _ b: UInt32) -> SIMD2<Float> {
         let u1 = max(uniform01(a), 1e-7)
         let u2 = uniform01(b)

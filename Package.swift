@@ -19,6 +19,7 @@ let package = Package(
         .library(name: "NumiTissueModels", targets: ["NumiTissueModels"]),
         .library(name: "NumiTissueRuntime", targets: ["NumiTissueRuntime"]),
         .library(name: "NumiTissueIO", targets: ["NumiTissueIO"]),
+        .library(name: "NumiTissueData", targets: ["NumiTissueData"]),
         .library(name: "NumiTissueReference", targets: ["NumiTissueReference"]),
         .library(name: "NumiTissueMetal", targets: ["NumiTissueMetal"]),
         .library(name: "NumiTissueIntegration", targets: ["NumiTissueIntegration"]),
@@ -46,6 +47,12 @@ let package = Package(
             name: "NumiTissueIO",
             dependencies: ["NumiTissueCore", "NumiTissueModels", "NumiTissueRuntime"],
             path: "Sources/NumiTissueIO",
+            swiftSettings: strictConcurrency
+        ),
+        .target(
+            name: "NumiTissueData",
+            dependencies: ["NumiTissueCore", "NumiTissueModels", "NumiTissueIO"],
+            path: "Sources/NumiTissueData",
             swiftSettings: strictConcurrency
         ),
         .target(
@@ -78,6 +85,7 @@ let package = Package(
                 "NumiTissueModels",
                 "NumiTissueRuntime",
                 "NumiTissueIO",
+                "NumiTissueData",
                 "NumiTissueReference",
                 "NumiTissueMetal",
                 "NumiTissueIntegration"

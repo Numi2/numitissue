@@ -2,6 +2,7 @@
 @_exported import NumiTissueModels
 @_exported import NumiTissueRuntime
 @_exported import NumiTissueIO
+@_exported import NumiTissueData
 @_exported import NumiTissueReference
 @_exported import NumiTissueMetal
 @_exported import NumiTissueIntegration

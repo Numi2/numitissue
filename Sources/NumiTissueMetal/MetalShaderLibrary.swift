@@ -51,14 +51,29 @@ public final class MetalShaderLibrary: @unchecked Sendable {
     public let context: MetalDeviceContext
     public let library: MTLLibrary
     public let numericalProfile: RuntimeNumericalProfile
+    public let pipelineArchive: MetalPipelineArchiveStore?
 
     private let lock = NSLock()
     private var pipelines: [MetalPipelineKey: MTLComputePipelineState] = [:]
 
-    public init(context: MetalDeviceContext, additionalSource: String? = nil) async throws {
+    public init(
+        context: MetalDeviceContext,
+        additionalSource: String? = nil,
+        pipelineArchiveURL: URL? = nil
+    ) async throws {
         self.context = context
         numericalProfile = context.options.effectiveNumericalProfile
-        let source = try Self.loadBundledShaderSource(additionalSource: additionalSource)
+        if let pipelineArchiveURL {
+            pipelineArchive = try MetalPipelineArchiveStore(
+                device: context.device,
+                url: pipelineArchiveURL
+            )
+        } else {
+            pipelineArchive = nil
+        }
+        let source = try Self.loadBundledShaderSource(
+            additionalSource: additionalSource
+        )
         let options = MTLCompileOptions()
         // Scientific and balanced profiles preserve CPU/Metal agreement; the explicitly opted-in
         // performance profile is the only path that enables Metal fast math.
@@ -66,10 +81,16 @@ public final class MetalShaderLibrary: @unchecked Sendable {
         options.languageVersion = .version3_2
         options.preserveInvariance = true
         do {
-            self.library = try await context.device.makeLibrary(source: source, options: options)
-            self.library.label = "NumiTissue.RuntimeKernels.\(numericalProfile.rawValue)"
+            self.library = try await context.device.makeLibrary(
+                source: source,
+                options: options
+            )
+            self.library.label =
+                "NumiTissue.RuntimeKernels.\(numericalProfile.rawValue)"
         } catch {
-            throw MetalRuntimeError.libraryCompilationFailed(String(describing: error))
+            throw MetalRuntimeError.libraryCompilationFailed(
+                String(describing: error)
+            )
         }
     }
 
@@ -78,7 +99,10 @@ public final class MetalShaderLibrary: @unchecked Sendable {
         constants: MTLFunctionConstantValues? = nil,
         constantsHash: UInt64 = 0
     ) throws -> MTLComputePipelineState {
-        let key = MetalPipelineKey(kernel: kernel, constantsHash: constantsHash)
+        let key = MetalPipelineKey(
+            kernel: kernel,
+            constantsHash: constantsHash
+        )
         lock.lock()
         if let cached = pipelines[key] {
             lock.unlock()
@@ -89,38 +113,79 @@ public final class MetalShaderLibrary: @unchecked Sendable {
         let function: MTLFunction
         if let constants {
             do {
-                function = try library.makeFunction(name: kernel.rawValue, constantValues: constants)
+                function = try library.makeFunction(
+                    name: kernel.rawValue,
+                    constantValues: constants
+                )
             } catch {
-                throw MetalRuntimeError.pipelineCreationFailed(function: kernel.rawValue, reason: String(describing: error))
+                throw MetalRuntimeError.pipelineCreationFailed(
+                    function: kernel.rawValue,
+                    reason: String(describing: error)
+                )
             }
         } else {
-            guard let value = library.makeFunction(name: kernel.rawValue) else {
+            guard let value = library.makeFunction(
+                name: kernel.rawValue
+            ) else {
                 throw MetalRuntimeError.functionMissing(kernel.rawValue)
             }
             function = value
         }
 
         let descriptor = MTLComputePipelineDescriptor()
-        descriptor.label = "NumiTissue.\(kernel.rawValue).\(numericalProfile.rawValue)"
+        let stableLabel = [
+            "NumiTissue",
+            kernel.rawValue,
+            numericalProfile.rawValue,
+            String(constantsHash, radix: 16)
+        ].joined(separator: ".")
+        descriptor.label = stableLabel
         descriptor.computeFunction = function
         descriptor.threadGroupSizeIsMultipleOfThreadExecutionWidth = true
         descriptor.maxCallStackDepth = 1
+        try pipelineArchive?.prepare(
+            descriptor: descriptor,
+            stableLabel: stableLabel
+        )
+
         do {
-            let pipeline = try context.device.makeComputePipelineState(descriptor: descriptor, options: [], reflection: nil)
+            let pipeline = try context.device.makeComputePipelineState(
+                descriptor: descriptor,
+                options: [],
+                reflection: nil
+            )
             lock.lock()
             pipelines[key] = pipeline
             lock.unlock()
             return pipeline
         } catch {
-            throw MetalRuntimeError.pipelineCreationFailed(function: kernel.rawValue, reason: String(describing: error))
+            throw MetalRuntimeError.pipelineCreationFailed(
+                function: kernel.rawValue,
+                reason: String(describing: error)
+            )
         }
     }
 
-    public func prewarm(_ kernels: [MetalKernel] = MetalKernel.allCases) throws {
+    public func prewarm(
+        _ kernels: [MetalKernel] = MetalKernel.allCases
+    ) throws {
         for kernel in kernels { _ = try pipeline(kernel) }
+        try pipelineArchive?.serializeIfNeeded()
     }
 
-    private static func loadBundledShaderSource(additionalSource: String?) throws -> String {
+    public func serializePipelineArchiveIfNeeded() throws {
+        try pipelineArchive?.serializeIfNeeded()
+    }
+
+    public var cachedPipelineCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return pipelines.count
+    }
+
+    private static func loadBundledShaderSource(
+        additionalSource: String?
+    ) throws -> String {
         let fileNames = [
             "NumiTissueABI",
             "NumiTissueOverlays",
@@ -135,9 +200,17 @@ public final class MetalShaderLibrary: @unchecked Sendable {
         ]
         var source = ""
         for name in fileNames {
-            guard let url = Bundle.module.url(forResource: name, withExtension: "metal", subdirectory: "Shaders")
-                    ?? Bundle.module.url(forResource: name, withExtension: "metal") else {
-                throw MetalRuntimeError.libraryCompilationFailed("Missing bundled shader source \(name).metal")
+            guard let url = Bundle.module.url(
+                forResource: name,
+                withExtension: "metal",
+                subdirectory: "Shaders"
+            ) ?? Bundle.module.url(
+                forResource: name,
+                withExtension: "metal"
+            ) else {
+                throw MetalRuntimeError.libraryCompilationFailed(
+                    "Missing bundled shader source \(name).metal"
+                )
             }
             source += try String(contentsOf: url, encoding: .utf8)
             source += "\n"
@@ -151,13 +224,23 @@ public final class MetalShaderLibrary: @unchecked Sendable {
 }
 
 public extension MTLComputeCommandEncoder {
-    func ntDispatch1D(count: Int, pipeline: MTLComputePipelineState) {
+    func ntDispatch1D(
+        count: Int,
+        pipeline: MTLComputePipelineState
+    ) {
         guard count > 0 else { return }
-        let width = min(pipeline.maxTotalThreadsPerThreadgroup, max(pipeline.threadExecutionWidth, 64))
+        let width = min(
+            pipeline.maxTotalThreadsPerThreadgroup,
+            max(pipeline.threadExecutionWidth, 64)
+        )
         setComputePipelineState(pipeline)
         dispatchThreads(
             MTLSize(width: count, height: 1, depth: 1),
-            threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+            threadsPerThreadgroup: MTLSize(
+                width: width,
+                height: 1,
+                depth: 1
+            )
         )
     }
 
@@ -168,7 +251,11 @@ public extension MTLComputeCommandEncoder {
         pipeline: MTLComputePipelineState
     ) {
         setComputePipelineState(pipeline)
-        dispatchThreadgroups(indirectBuffer: buffer, indirectBufferOffset: offset, threadsPerThreadgroup: threadsPerThreadgroup)
+        dispatchThreadgroups(
+            indirectBuffer: buffer,
+            indirectBufferOffset: offset,
+            threadsPerThreadgroup: threadsPerThreadgroup
+        )
     }
 }
 #endif

@@ -1,30 +1,20 @@
 {
-  "corpusVersion": "0.1.0",
-  "entries": [
-    {
-      "id": "electrophysiology.passive-rc",
-      "manifestPath": "electrophysiology/passive-rc/case.json",
-      "required": true,
-      "tier": "analytical"
-    },
-    {
-      "id": "molecular.first-order-decay",
-      "manifestPath": "molecular/first-order-decay/case.json",
-      "required": true,
-      "tier": "analytical"
-    },
-    {
-      "id": "transaction.event-wheel-order",
-      "manifestPath": "transaction/event-wheel-order/case.json",
-      "required": true,
-      "tier": "smoke"
-    }
+  "schemaVersion":1,
+  "name":"NumiTissue Phase 1 Scientific Validation Corpus",
+  "corpusVersion":"0.2.0",
+  "entries":[
+    {"id":"electrophysiology.passive-rc","manifestPath":"electrophysiology/passive-rc/case.json","required":true,"tier":"analytical"},
+    {"id":"electrophysiology.hh-rush-larsen","manifestPath":"electrophysiology/hh-rush-larsen/case.json","required":true,"tier":"analytical"},
+    {"id":"electrophysiology.spike-interpolation","manifestPath":"electrophysiology/spike-interpolation/case.json","required":true,"tier":"smoke"},
+    {"id":"synapse.exponential-decay","manifestPath":"synapse/exponential-decay/case.json","required":true,"tier":"analytical"},
+    {"id":"synapse.short-term-depression","manifestPath":"synapse/short-term-depression/case.json","required":true,"tier":"analytical"},
+    {"id":"plasticity.modulated-eligibility","manifestPath":"plasticity/modulated-eligibility/case.json","required":true,"tier":"analytical"},
+    {"id":"molecular.first-order-decay","manifestPath":"molecular/first-order-decay/case.json","required":true,"tier":"analytical"},
+    {"id":"molecular.reversible-conservation","manifestPath":"molecular/reversible-conservation/case.json","required":true,"tier":"analytical"},
+    {"id":"extracellular-field.uniform-diffusion","manifestPath":"extracellular-field/uniform-diffusion/case.json","required":true,"tier":"analytical"},
+    {"id":"extracellular-field.source-sink","manifestPath":"extracellular-field/source-sink/case.json","required":true,"tier":"analytical"},
+    {"id":"transaction.event-wheel-order","manifestPath":"transaction/event-wheel-order/case.json","required":true,"tier":"smoke"},
+    {"id":"transaction.route-determinism","manifestPath":"transaction/route-determinism/case.json","required":true,"tier":"smoke"}
   ],
-  "metadata": {
-    "numitissue.phase": "1",
-    "numitissue.time.quantum.microseconds": "25",
-    "numitissue.validation.policy": "tolerances-live-in-manifests"
-  },
-  "name": "NumiTissue Phase 1 Scientific Validation Corpus",
-  "schemaVersion": 1
+  "metadata":{"numitissue.phase":"1","numitissue.time.quantum.microseconds":"25","numitissue.validation.policy":"tolerances-live-in-manifests","numitissue.required.case-count":"12"}
 }

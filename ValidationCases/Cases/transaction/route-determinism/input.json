@@ -1,0 +1,1 @@
+{"source":{"tick":10,"id":42,"amplitude":3},"routes":[{"destination":100,"delayTicks":4,"gain":0.5},{"destination":101,"delayTicks":7,"gain":2}]}

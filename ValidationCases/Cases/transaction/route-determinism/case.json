@@ -1,0 +1,20 @@
+{
+  "schemaVersion":1,
+  "id":"transaction.route-determinism",
+  "title":"Deterministic zero-loss route fanout",
+  "summary":"Checks route ordering, delay application, gain application, and same-seed repeatability.",
+  "domain":"transaction",
+  "tier":"smoke",
+  "deterministic":true,
+  "modelPath":null,
+  "inputPath":"input.json",
+  "reference":{"kind":"invariant","engine":"EventRouteTable invariant","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"Source-contiguous immutable fanout with deterministic event ordering","metadata":{}},
+  "criteria":[
+    {"id":"exact-output","observable":"routing.output","unit":"ordered-event","comparison":"exactDigest","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"repeatability","observable":"routing.repeatability","unit":"boolean","comparison":"topologyInvariant","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{"predicate":"first==second"}}
+  ],
+  "tags":["deterministic","phase-1","routing","transaction"],
+  "requiredProfiles":["boundedDeterministic","scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

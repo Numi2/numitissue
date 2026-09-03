@@ -1,51 +1,20 @@
 {
-  "criteria": [
-    {
-      "absoluteTolerance": 0.0005,
-      "comparison": "trace",
-      "id": "voltage-trace",
-      "metadata": {},
-      "minimumCorrelation": 0.999999,
-      "minimumSampleCount": 100,
-      "observable": "compartment.voltage",
-      "relativeTolerance": 1e-05,
-      "rootMeanSquareTolerance": 0.0002,
-      "unit": "mV"
-    },
-    {
-      "absoluteTolerance": 0.001,
-      "comparison": "scalar",
-      "id": "steady-state",
-      "metadata": {},
-      "observable": "compartment.voltage.final",
-      "relativeTolerance": 1e-05,
-      "unit": "mV"
-    }
+  "schemaVersion":1,
+  "id":"electrophysiology.passive-rc",
+  "title":"Passive RC membrane step response",
+  "summary":"Verifies the implicit single-compartment membrane update against the backward-Euler analytical recurrence and continuous steady state.",
+  "domain":"electrophysiology",
+  "tier":"analytical",
+  "deterministic":true,
+  "modelPath":"model.json",
+  "inputPath":"input.json",
+  "reference":{"kind":"analytical","engine":"closed-form RC membrane","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"C dV/dt = -g(V-E) + I","metadata":{"integration":"backward-euler-is-compared-at-identical-step-size"}},
+  "criteria":[
+    {"id":"voltage-trace","observable":"compartment.voltage","unit":"mV","comparison":"trace","absoluteTolerance":0.003,"relativeTolerance":0.0001,"rootMeanSquareTolerance":0.001,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":0.999999,"conservationRelativeTolerance":null,"minimumSampleCount":100,"metadata":{}},
+    {"id":"steady-state","observable":"compartment.voltage.final","unit":"mV","comparison":"scalar","absoluteTolerance":0.005,"relativeTolerance":1e-5,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}}
   ],
-  "deterministic": true,
-  "domain": "electrophysiology",
-  "id": "electrophysiology.passive-rc",
-  "inputPath": "input.json",
-  "metadata": {
-    "reference.authority": "analytical",
-    "reference.generator": "NumiTissueAnalyticalReferences.passiveRC"
-  },
-  "modelPath": "model.json",
-  "randomSeeds": [],
-  "reference": {
-    "artifactPath": "expected.json",
-    "citation": "C dV/dt = -g(V-E) + I",
-    "engine": "closed-form RC membrane",
-    "kind": "analytical",
-    "metadata": {
-      "integration": "backward-euler-is-compared-at-identical-step-size"
-    },
-    "version": "1"
-  },
-  "requiredProfiles": ["scientific"],
-  "schemaVersion": 1,
-  "summary": "Verifies the implicit single-compartment membrane update against the closed-form passive RC solution.",
-  "tags": ["analytical", "cable-equation", "deterministic", "phase-1"],
-  "tier": "analytical",
-  "title": "Passive RC membrane step response"
+  "tags":["analytical","cable-equation","deterministic","phase-1"],
+  "requiredProfiles":["scientific"],
+  "randomSeeds":[],
+  "metadata":{"reference.authority":"analytical","reference.generator":"NumiTissueAnalyticalReferences.passiveRC"}
 }

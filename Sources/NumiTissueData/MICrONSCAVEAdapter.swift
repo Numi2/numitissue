@@ -55,17 +55,24 @@ public struct CAVEQueryDescriptor: Codable, Sendable, Equatable {
               filterIn.keys.allSatisfy({ !$0.isEmpty }),
               filterIn.values.allSatisfy({ !$0.isEmpty }),
               limit.map({ $0 > 0 && $0 <= 1_000_000 }) ?? true,
-              offset >= 0 else {
-            throw BiologicalDatasetAdapterError.invalidAdapterConfiguration("cave-query")
+              offset >= 0,
+              metadata.keys.allSatisfy({ !$0.isEmpty }) else {
+            throw BiologicalDatasetAdapterError.invalidAdapterConfiguration(
+                "cave-query"
+            )
         }
         switch operation {
         case .datastackInfo, .materializationVersions:
             guard table == nil else {
-                throw BiologicalDatasetAdapterError.invalidAdapterConfiguration("cave-query")
+                throw BiologicalDatasetAdapterError.invalidAdapterConfiguration(
+                    "cave-query"
+                )
             }
         case .materializationTable:
             guard table?.isEmpty == false, materializationVersion != nil else {
-                throw BiologicalDatasetAdapterError.invalidAdapterConfiguration("cave-query")
+                throw BiologicalDatasetAdapterError.invalidAdapterConfiguration(
+                    "cave-query"
+                )
             }
         }
         for bounds in spatialBounds { _ = try bounds.validated() }
@@ -74,7 +81,10 @@ public struct CAVEQueryDescriptor: Codable, Sendable, Equatable {
 
     public func canonicalString() throws -> String {
         let value = try validated()
-        return String(decoding: try ScientificCanonicalJSON.encode(value), as: UTF8.self)
+        return String(
+            decoding: try ScientificCanonicalJSON.encode(value),
+            as: UTF8.self
+        )
     }
 }
 
@@ -84,14 +94,20 @@ public struct MICrONSCAVEAdapterConfiguration: Codable, Sendable, Equatable {
     public var synapseTable: String
     public var pageSize: Int
     public var allowUnboundedTableQueries: Bool
+    public var cellSpatialColumn: String
+    public var synapseSpatialColumn: String
+    public var voxelCoordinateFrameID: String
     public var credentialScope: String?
 
     public init(
-        adapterID: String = "microns-cave-v2",
+        adapterID: String = "microns-cave-v3",
         cellTable: String = "nucleus_detection_v0",
         synapseTable: String = "synapses_pni_2",
         pageSize: Int = 200_000,
         allowUnboundedTableQueries: Bool = false,
+        cellSpatialColumn: String = "pt_position",
+        synapseSpatialColumn: String = "ctr_pt_position",
+        voxelCoordinateFrameID: String = "cave-voxel",
         credentialScope: String? = "cave.read"
     ) {
         self.adapterID = adapterID
@@ -99,6 +115,9 @@ public struct MICrONSCAVEAdapterConfiguration: Codable, Sendable, Equatable {
         self.synapseTable = synapseTable
         self.pageSize = pageSize
         self.allowUnboundedTableQueries = allowUnboundedTableQueries
+        self.cellSpatialColumn = cellSpatialColumn
+        self.synapseSpatialColumn = synapseSpatialColumn
+        self.voxelCoordinateFrameID = voxelCoordinateFrameID
         self.credentialScope = credentialScope
     }
 
@@ -106,10 +125,15 @@ public struct MICrONSCAVEAdapterConfiguration: Codable, Sendable, Equatable {
         guard !adapterID.isEmpty,
               !cellTable.isEmpty,
               !synapseTable.isEmpty,
+              !cellSpatialColumn.isEmpty,
+              !synapseSpatialColumn.isEmpty,
+              !voxelCoordinateFrameID.isEmpty,
               pageSize > 0,
               pageSize <= 1_000_000,
               credentialScope?.isEmpty != true else {
-            throw BiologicalDatasetAdapterError.invalidAdapterConfiguration(adapterID)
+            throw BiologicalDatasetAdapterError.invalidAdapterConfiguration(
+                adapterID
+            )
         }
         return self
     }
@@ -164,8 +188,10 @@ public struct MICrONSCAVEAdapter: BiologicalDatasetAdapter {
             dataset: sourceDataset,
             selection: sourceSelection
         )
+        let serverBaseURL = try caveServiceBaseURL(dataset)
         let materializationText = dataset.materializationVersion ?? dataset.release
-        guard let materialization = Int(materializationText), materialization >= 0 else {
+        guard let materialization = Int(materializationText),
+              materialization >= 0 else {
             throw BiologicalDatasetAdapterError.invalidMaterializationVersion(
                 materializationText
             )
@@ -188,8 +214,11 @@ public struct MICrONSCAVEAdapter: BiologicalDatasetAdapter {
                 id: infoID,
                 dataset: dataset,
                 selection: selection,
-                descriptor: CAVEQueryDescriptor(operation: .datastackInfo),
-                decoderID: "cave-datastack-info-v2",
+                descriptor: CAVEQueryDescriptor(
+                    operation: .datastackInfo,
+                    metadata: ["cave.server-base-url": serverBaseURL]
+                ),
+                decoderID: "cave-datastack-info-v3",
                 dependencies: [],
                 priority: .critical
             ),
@@ -197,36 +226,46 @@ public struct MICrONSCAVEAdapter: BiologicalDatasetAdapter {
                 id: versionID,
                 dataset: dataset,
                 selection: selection,
-                descriptor: CAVEQueryDescriptor(operation: .materializationVersions),
-                decoderID: "cave-materialization-versions-v2",
+                descriptor: CAVEQueryDescriptor(
+                    operation: .materializationVersions,
+                    metadata: ["cave.server-base-url": serverBaseURL]
+                ),
+                decoderID: "cave-materialization-versions-v3",
                 dependencies: [infoID],
                 priority: .critical
             )
         ]
 
         let tables = selectedTables(selection)
+        let windows: [DatasetSpatialWindow?] = selection.spatialWindows.isEmpty
+            ? [nil]
+            : selection.spatialWindows.map(Optional.some)
         for (tableOrdinal, table) in tables.enumerated() {
             let roles = entityRoles(table: table, selection: selection)
             for (roleOrdinal, role) in roles.enumerated() {
-                let descriptor = try tableDescriptor(
-                    table: table,
-                    materialization: materialization,
-                    selection: selection,
-                    entityRole: role
-                )
-                requests.append(try caveRequest(
-                    id: BiologicalAdapterUtilities.requestID(
-                        planID: planID,
-                        role: "cave-table-\(tableOrdinal)",
-                        ordinal: roleOrdinal
-                    ),
-                    dataset: dataset,
-                    selection: selection,
-                    descriptor: descriptor,
-                    decoderID: "cave-materialization-table-v2",
-                    dependencies: [infoID, versionID],
-                    priority: .high
-                ))
+                for (windowOrdinal, window) in windows.enumerated() {
+                    let descriptor = try tableDescriptor(
+                        table: table,
+                        materialization: materialization,
+                        selection: selection,
+                        entityRole: role,
+                        spatialWindow: window,
+                        serverBaseURL: serverBaseURL
+                    )
+                    requests.append(try caveRequest(
+                        id: BiologicalAdapterUtilities.requestID(
+                            planID: planID,
+                            role: "cave-table-\(tableOrdinal)",
+                            ordinal: roleOrdinal * windows.count + windowOrdinal
+                        ),
+                        dataset: dataset,
+                        selection: selection,
+                        descriptor: descriptor,
+                        decoderID: "cave-materialization-table-v3",
+                        dependencies: [infoID, versionID],
+                        priority: .high
+                    ))
+                }
             }
         }
         return try DatasetQueryPlan(
@@ -237,9 +276,13 @@ public struct MICrONSCAVEAdapter: BiologicalDatasetAdapter {
             requests: requests,
             metadata: [
                 "numitissue.adapter.family": "cave",
-                "numitissue.adapter.version": "2",
+                "numitissue.adapter.version": "3",
+                "numitissue.cave.server-base-url": serverBaseURL,
+                "numitissue.cave.voxel-frame":
+                    configuration.voxelCoordinateFrameID,
                 "numitissue.cave.materialization": String(materialization),
-                "numitissue.pagination.page-size": String(configuration.pageSize)
+                "numitissue.pagination.page-size":
+                    String(configuration.pageSize)
             ]
         ).validated()
     }
@@ -277,12 +320,17 @@ public struct MICrONSCAVEAdapter: BiologicalDatasetAdapter {
         table: String,
         materialization: Int,
         selection: DatasetSelection,
-        entityRole: String?
+        entityRole: String?,
+        spatialWindow: DatasetSpatialWindow?,
+        serverBaseURL: String
     ) throws -> CAVEQueryDescriptor {
+        let serverPredicateCount = selection.metadataPredicates.keys.filter {
+            !$0.hasPrefix("cave.")
+        }.count
         let hasBoundingConstraint = !selection.entityIdentifiers.isEmpty ||
-            !selection.spatialWindows.isEmpty ||
+            spatialWindow != nil ||
             selection.sampling.targetCount != nil ||
-            !selection.metadataPredicates.isEmpty
+            serverPredicateCount > 0
         guard configuration.allowUnboundedTableQueries || hasBoundingConstraint else {
             throw BiologicalDatasetAdapterError.unboundedQuery(
                 source: source,
@@ -299,8 +347,9 @@ public struct MICrONSCAVEAdapter: BiologicalDatasetAdapter {
             filterIn[entityRole] = selection.entityIdentifiers.sorted()
         } else if table == configuration.cellTable,
                   !selection.entityIdentifiers.isEmpty {
-            filterIn[selection.metadataPredicates["cave.cell-id-column"] ?? "pt_root_id"] =
-                selection.entityIdentifiers.sorted()
+            let column = selection.metadataPredicates["cave.cell-id-column"] ??
+                "pt_root_id"
+            filterIn[column] = selection.entityIdentifiers.sorted()
         }
         let requested = selection.sampling.targetCount.map {
             min($0, UInt64(Int.max))
@@ -315,16 +364,35 @@ public struct MICrONSCAVEAdapter: BiologicalDatasetAdapter {
             UInt64(configuration.pageSize),
             requested ?? budgetBound
         ))
+        if let spatialWindow,
+           spatialWindow.bounds.frameID !=
+            configuration.voxelCoordinateFrameID {
+            throw MICrONSCAVEAdapterError.spatialFrameMismatch(
+                expected: configuration.voxelCoordinateFrameID,
+                actual: spatialWindow.bounds.frameID
+            )
+        }
+        var metadata: [String: String] = [
+            "cave.server-base-url": serverBaseURL,
+            "cave.spatial-column": table == configuration.synapseTable
+                ? configuration.synapseSpatialColumn
+                : configuration.cellSpatialColumn,
+            "cave.voxel-frame": configuration.voxelCoordinateFrameID
+        ]
+        if let entityRole { metadata["cave.entity-role"] = entityRole }
         return try CAVEQueryDescriptor(
             operation: .materializationTable,
             table: table,
             materializationVersion: materialization,
-            selectedColumns: caveColumns(table: table, selection: selection),
+            selectedColumns: caveColumns(
+                table: table,
+                selection: selection
+            ),
             filterEqual: filterEqual,
             filterIn: filterIn,
-            spatialBounds: selection.spatialWindows.map(\.bounds),
+            spatialBounds: spatialWindow.map { [$0.bounds] } ?? [],
             limit: max(1, limit),
-            metadata: entityRole.map { ["entity-role": $0] } ?? [:]
+            metadata: metadata
         ).validated()
     }
 
@@ -333,20 +401,21 @@ public struct MICrONSCAVEAdapter: BiologicalDatasetAdapter {
         selection: DatasetSelection
     ) -> [String] {
         if let columns = selection.metadataPredicates["cave.select-columns"] {
+            var seen = Set<String>()
             return columns.split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
+                .filter { !$0.isEmpty && seen.insert($0).inserted }
         }
         if table == configuration.synapseTable {
             return [
                 "id",
                 "pre_pt_root_id",
                 "post_pt_root_id",
-                "ctr_pt_position",
+                configuration.synapseSpatialColumn,
                 "size"
             ]
         }
-        return ["id", "pt_root_id", "pt_position"]
+        return ["id", "pt_root_id", configuration.cellSpatialColumn]
     }
 
     private func caveRequest(
@@ -362,7 +431,9 @@ public struct MICrONSCAVEAdapter: BiologicalDatasetAdapter {
         let query = try descriptor.canonicalString()
         return DatasetQueryRequest(
             id: id,
-            method: descriptor.operation == .materializationTable ? .post : .get,
+            method: descriptor.operation == .materializationTable
+                ? .post
+                : .get,
             locator: .cave(
                 datastack: dataset.datasetID,
                 table: descriptor.table,
@@ -379,15 +450,54 @@ public struct MICrONSCAVEAdapter: BiologicalDatasetAdapter {
             expectedMediaType: "application/json",
             dependencies: dependencies,
             priority: priority,
-            cachePolicy: dataset.stability == .materializedSnapshot ? .immutable : .revalidate,
+            cachePolicy: dataset.stability == .mutableLatest
+                ? .revalidate
+                : .immutable,
             metadata: BiologicalAdapterUtilities.canonicalMetadata(
                 source: source,
                 selection: selection,
                 additional: [
-                    "numitissue.discovery-role": descriptor.operation.rawValue,
-                    "numitissue.cave.operation": descriptor.operation.rawValue
+                    "numitissue.discovery-role":
+                        descriptor.operation.rawValue,
+                    "numitissue.cave.operation":
+                        descriptor.operation.rawValue
                 ]
             )
         )
+    }
+
+    private func caveServiceBaseURL(_ dataset: DatasetVersion) throws -> String {
+        guard let sourceURI = dataset.sourceURI,
+              let components = URLComponents(string: sourceURI),
+              components.scheme?.lowercased() == "https",
+              components.host?.isEmpty == false,
+              components.user == nil,
+              components.password == nil else {
+            throw BiologicalDatasetAdapterError.missingDatasetSourceURI(
+                dataset.stableReference
+            )
+        }
+        var normalized = components
+        normalized.query = nil
+        normalized.fragment = nil
+        guard let value = normalized.url?.absoluteString else {
+            throw BiologicalDatasetAdapterError.missingDatasetSourceURI(
+                dataset.stableReference
+            )
+        }
+        return value.trimmingCharacters(
+            in: CharacterSet(charactersIn: "/")
+        )
+    }
+}
+
+public enum MICrONSCAVEAdapterError: Error, Sendable, CustomStringConvertible {
+    case spatialFrameMismatch(expected: String, actual: String)
+
+    public var description: String {
+        switch self {
+        case .spatialFrameMismatch(let expected, let actual):
+            return "CAVE spatial selection uses frame \(actual); expected voxel frame \(expected)."
+        }
     }
 }

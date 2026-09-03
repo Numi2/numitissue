@@ -19,10 +19,11 @@ public struct TissueCheckpointManifest: Sendable, Hashable, Codable {
     public var randomSeed: UInt64
     public var modelDigest: UInt64
     public var stateDigest: UInt64
+    public var auxiliaryStateDigest: ScientificSHA256Digest?
     public var metadata: [String: String]
 
     public init(
-        formatVersion: UInt32 = 1,
+        formatVersion: UInt32 = 2,
         simulatorVersion: String,
         createdAt: Date = Date(),
         epoch: UInt64,
@@ -30,6 +31,7 @@ public struct TissueCheckpointManifest: Sendable, Hashable, Codable {
         randomSeed: UInt64,
         modelDigest: UInt64,
         stateDigest: UInt64,
+        auxiliaryStateDigest: ScientificSHA256Digest? = nil,
         metadata: [String: String] = [:]
     ) {
         self.formatVersion = formatVersion
@@ -40,6 +42,7 @@ public struct TissueCheckpointManifest: Sendable, Hashable, Codable {
         self.randomSeed = randomSeed
         self.modelDigest = modelDigest
         self.stateDigest = stateDigest
+        self.auxiliaryStateDigest = auxiliaryStateDigest
         self.metadata = metadata
     }
 }
@@ -73,6 +76,10 @@ public struct TissueCheckpoint: Sendable, Codable {
     ) throws -> Self {
         try state.validateCapacity()
         let digest = try TissueStateDigest.compute(state)
+        let auxiliaryDigest = try TissueCheckpointAuxiliaryDigest.compute(
+            opaqueModelState: opaqueModelState,
+            suiteParticipantState: suiteParticipantState
+        )
         let manifest = TissueCheckpointManifest(
             simulatorVersion: simulatorVersion,
             epoch: state.epoch,
@@ -80,6 +87,7 @@ public struct TissueCheckpoint: Sendable, Codable {
             randomSeed: randomSeed,
             modelDigest: modelDigest,
             stateDigest: digest,
+            auxiliaryStateDigest: auxiliaryDigest,
             metadata: metadata
         )
         return Self(
@@ -91,18 +99,50 @@ public struct TissueCheckpoint: Sendable, Codable {
     }
 
     public func validated(expectedModelDigest: UInt64? = nil) throws -> Self {
-        guard manifest.formatVersion == 1 else { throw TissueCheckpointError.unsupportedVersion(manifest.formatVersion) }
-        guard manifest.epoch == state.epoch, manifest.timeTick == state.time.tick else { throw TissueCheckpointError.manifestStateMismatch }
-        if let expectedModelDigest, expectedModelDigest != manifest.modelDigest { throw TissueCheckpointError.modelDigestMismatch }
+        guard manifest.formatVersion == 1 || manifest.formatVersion == 2 else {
+            throw TissueCheckpointError.unsupportedVersion(
+                manifest.formatVersion
+            )
+        }
+        guard manifest.epoch == state.epoch,
+              manifest.timeTick == state.time.tick else {
+            throw TissueCheckpointError.manifestStateMismatch
+        }
+        if let expectedModelDigest,
+           expectedModelDigest != manifest.modelDigest {
+            throw TissueCheckpointError.modelDigestMismatch
+        }
         try state.validateCapacity()
         let digest = try TissueStateDigest.compute(state)
-        guard digest == manifest.stateDigest else { throw TissueCheckpointError.stateDigestMismatch(expected: manifest.stateDigest, actual: digest) }
+        guard digest == manifest.stateDigest else {
+            throw TissueCheckpointError.stateDigestMismatch(
+                expected: manifest.stateDigest,
+                actual: digest
+            )
+        }
+        if manifest.formatVersion >= 2 {
+            guard let expected = manifest.auxiliaryStateDigest else {
+                throw TissueCheckpointError.missingAuxiliaryStateDigest
+            }
+            let actual = try TissueCheckpointAuxiliaryDigest.compute(
+                opaqueModelState: opaqueModelState,
+                suiteParticipantState: suiteParticipantState
+            )
+            guard actual == expected else {
+                throw TissueCheckpointError.auxiliaryStateDigestMismatch(
+                    expected: expected,
+                    actual: actual
+                )
+            }
+        }
         return self
     }
 }
 
 public enum TissueCheckpointArchive {
-    private static let magic = Data([0x4e, 0x54, 0x49, 0x53, 0x53, 0x55, 0x45, 0x01]) // NTISSUE + binary format 1
+    private static let magic = Data([
+        0x4e, 0x54, 0x49, 0x53, 0x53, 0x55, 0x45, 0x01
+    ])
     private static let headerSize = 48
 
     public static func write(
@@ -139,15 +179,24 @@ public enum TissueCheckpointArchive {
         append(CRC64.ecma(payload), to: &archive)
         append(checkpoint.manifest.modelDigest, to: &archive)
         archive.append(payload)
-        guard archive.count == headerSize + payload.count else { throw TissueCheckpointError.headerEncoding }
+        guard archive.count == headerSize + payload.count else {
+            throw TissueCheckpointError.headerEncoding
+        }
 
         if atomically {
             let directory = url.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let temporary = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let temporary = directory.appendingPathComponent(
+                ".\(url.lastPathComponent).\(UUID().uuidString).tmp"
+            )
             do {
                 try archive.write(to: temporary, options: [.atomic])
-                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
                 try FileManager.default.moveItem(at: temporary, to: url)
             } catch {
                 try? FileManager.default.removeItem(at: temporary)
@@ -158,48 +207,113 @@ public enum TissueCheckpointArchive {
         }
     }
 
-    public static func read(from url: URL, expectedModelDigest: UInt64? = nil) throws -> TissueCheckpoint {
-        try decode(Data(contentsOf: url, options: [.mappedIfSafe]), expectedModelDigest: expectedModelDigest)
+    public static func read(
+        from url: URL,
+        expectedModelDigest: UInt64? = nil
+    ) throws -> TissueCheckpoint {
+        try decode(
+            Data(contentsOf: url, options: [.mappedIfSafe]),
+            expectedModelDigest: expectedModelDigest
+        )
     }
 
-    public static func decode(_ archive: Data, expectedModelDigest: UInt64? = nil) throws -> TissueCheckpoint {
-        guard archive.count >= headerSize else { throw TissueCheckpointError.truncated }
-        guard archive.prefix(magic.count) == magic else { throw TissueCheckpointError.invalidMagic }
+    public static func decode(
+        _ archive: Data,
+        expectedModelDigest: UInt64? = nil
+    ) throws -> TissueCheckpoint {
+        guard archive.count >= headerSize else {
+            throw TissueCheckpointError.truncated
+        }
+        guard archive.prefix(magic.count) == magic else {
+            throw TissueCheckpointError.invalidMagic
+        }
         var cursor = magic.count
         let version: UInt32 = try read(from: archive, cursor: &cursor)
-        guard version == 1 else { throw TissueCheckpointError.unsupportedVersion(version) }
-        let compressionRaw: UInt32 = try read(from: archive, cursor: &cursor)
-        guard let compression = TissueCheckpointCompression(rawValue: compressionRaw) else { throw TissueCheckpointError.unsupportedCompression(compressionRaw) }
-        let payloadLength: UInt64 = try read(from: archive, cursor: &cursor)
-        let plainLength: UInt64 = try read(from: archive, cursor: &cursor)
+        guard version == 1 else {
+            throw TissueCheckpointError.unsupportedVersion(version)
+        }
+        let compressionRaw: UInt32 = try read(
+            from: archive,
+            cursor: &cursor
+        )
+        guard let compression = TissueCheckpointCompression(
+            rawValue: compressionRaw
+        ) else {
+            throw TissueCheckpointError.unsupportedCompression(compressionRaw)
+        }
+        let payloadLength: UInt64 = try read(
+            from: archive,
+            cursor: &cursor
+        )
+        let plainLength: UInt64 = try read(
+            from: archive,
+            cursor: &cursor
+        )
         let checksum: UInt64 = try read(from: archive, cursor: &cursor)
         let modelDigest: UInt64 = try read(from: archive, cursor: &cursor)
-        guard payloadLength <= UInt64(Int.max), plainLength <= UInt64(Int.max), cursor + Int(payloadLength) == archive.count else { throw TissueCheckpointError.invalidLength }
+        guard payloadLength <= UInt64(Int.max),
+              plainLength <= UInt64(Int.max),
+              cursor + Int(payloadLength) == archive.count else {
+            throw TissueCheckpointError.invalidLength
+        }
         let payload = Data(archive[cursor...])
-        guard CRC64.ecma(payload) == checksum else { throw TissueCheckpointError.checksum }
+        guard CRC64.ecma(payload) == checksum else {
+            throw TissueCheckpointError.checksum
+        }
         let plain: Data
         switch compression {
         case .none:
             plain = payload
         case .lzfse:
             #if canImport(Compression)
-            plain = try decompress(payload, outputCount: Int(plainLength), algorithm: COMPRESSION_LZFSE)
+            plain = try decompress(
+                payload,
+                outputCount: Int(plainLength),
+                algorithm: COMPRESSION_LZFSE
+            )
             #else
             throw TissueCheckpointError.compressionUnavailable
             #endif
         }
-        guard plain.count == Int(plainLength) else { throw TissueCheckpointError.invalidLength }
-        let checkpoint = try PropertyListDecoder().decode(TissueCheckpoint.self, from: plain)
-        guard checkpoint.manifest.modelDigest == modelDigest else { throw TissueCheckpointError.modelDigestMismatch }
-        return try checkpoint.validated(expectedModelDigest: expectedModelDigest)
+        guard plain.count == Int(plainLength) else {
+            throw TissueCheckpointError.invalidLength
+        }
+        let checkpoint = try PropertyListDecoder().decode(
+            TissueCheckpoint.self,
+            from: plain
+        )
+        guard checkpoint.manifest.modelDigest == modelDigest else {
+            throw TissueCheckpointError.modelDigestMismatch
+        }
+        return try checkpoint.validated(
+            expectedModelDigest: expectedModelDigest
+        )
     }
 
-    public static func inspect(_ archive: Data) throws -> (version: UInt32, compression: TissueCheckpointCompression, payloadBytes: UInt64, uncompressedBytes: UInt64, modelDigest: UInt64) {
-        guard archive.count >= headerSize, archive.prefix(magic.count) == magic else { throw TissueCheckpointError.invalidMagic }
+    public static func inspect(
+        _ archive: Data
+    ) throws -> (
+        version: UInt32,
+        compression: TissueCheckpointCompression,
+        payloadBytes: UInt64,
+        uncompressedBytes: UInt64,
+        modelDigest: UInt64
+    ) {
+        guard archive.count >= headerSize,
+              archive.prefix(magic.count) == magic else {
+            throw TissueCheckpointError.invalidMagic
+        }
         var cursor = magic.count
         let version: UInt32 = try read(from: archive, cursor: &cursor)
-        let compressionRaw: UInt32 = try read(from: archive, cursor: &cursor)
-        guard let compression = TissueCheckpointCompression(rawValue: compressionRaw) else { throw TissueCheckpointError.unsupportedCompression(compressionRaw) }
+        let compressionRaw: UInt32 = try read(
+            from: archive,
+            cursor: &cursor
+        )
+        guard let compression = TissueCheckpointCompression(
+            rawValue: compressionRaw
+        ) else {
+            throw TissueCheckpointError.unsupportedCompression(compressionRaw)
+        }
         let payload: UInt64 = try read(from: archive, cursor: &cursor)
         let plain: UInt64 = try read(from: archive, cursor: &cursor)
         let _: UInt64 = try read(from: archive, cursor: &cursor)
@@ -207,15 +321,24 @@ public enum TissueCheckpointArchive {
         return (version, compression, payload, plain, model)
     }
 
-    private static func append<T: FixedWidthInteger>(_ value: T, to data: inout Data) {
+    private static func append<T: FixedWidthInteger>(
+        _ value: T,
+        to data: inout Data
+    ) {
         var little = value.littleEndian
         withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
     }
 
-    private static func read<T: FixedWidthInteger>(from data: Data, cursor: inout Int) throws -> T {
+    private static func read<T: FixedWidthInteger>(
+        from data: Data,
+        cursor: inout Int
+    ) throws -> T {
         let size = MemoryLayout<T>.size
-        guard cursor + size <= data.count else { throw TissueCheckpointError.truncated }
-        let value = data[cursor..<(cursor + size)].withUnsafeBytes { bytes -> T in
+        guard cursor + size <= data.count else {
+            throw TissueCheckpointError.truncated
+        }
+        let value = data[cursor..<(cursor + size)].withUnsafeBytes {
+            bytes -> T in
             bytes.loadUnaligned(as: T.self)
         }
         cursor += size
@@ -223,7 +346,10 @@ public enum TissueCheckpointArchive {
     }
 
     #if canImport(Compression)
-    private static func compress(_ input: Data, algorithm: compression_algorithm) throws -> Data {
+    private static func compress(
+        _ input: Data,
+        algorithm: compression_algorithm
+    ) throws -> Data {
         guard !input.isEmpty else { return input }
         var capacity = max(input.count / 2, 1_024)
         while capacity <= max(input.count * 2, 1_024) {
@@ -240,13 +366,20 @@ public enum TissueCheckpointArchive {
                     )
                 }
             }
-            if written > 0 { output.count = written; return output }
+            if written > 0 {
+                output.count = written
+                return output
+            }
             capacity *= 2
         }
         throw TissueCheckpointError.compressionFailed
     }
 
-    private static func decompress(_ input: Data, outputCount: Int, algorithm: compression_algorithm) throws -> Data {
+    private static func decompress(
+        _ input: Data,
+        outputCount: Int,
+        algorithm: compression_algorithm
+    ) throws -> Data {
         var output = Data(count: outputCount)
         let written = input.withUnsafeBytes { source in
             output.withUnsafeMutableBytes { destination in
@@ -260,7 +393,9 @@ public enum TissueCheckpointArchive {
                 )
             }
         }
-        guard written == outputCount else { throw TissueCheckpointError.decompressionFailed }
+        guard written == outputCount else {
+            throw TissueCheckpointError.decompressionFailed
+        }
         return output
     }
     #endif
@@ -276,31 +411,57 @@ public actor TissueCheckpointStore {
     }
 
     @discardableResult
-    public func save(_ checkpoint: TissueCheckpoint, compression: TissueCheckpointCompression = .lzfse) throws -> URL {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let name = String(format: "epoch-%020llu-tick-%020llu.ntissue", checkpoint.manifest.epoch, checkpoint.manifest.timeTick)
+    public func save(
+        _ checkpoint: TissueCheckpoint,
+        compression: TissueCheckpointCompression = .lzfse
+    ) throws -> URL {
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let name = String(
+            format: "epoch-%020llu-tick-%020llu.ntissue",
+            checkpoint.manifest.epoch,
+            checkpoint.manifest.timeTick
+        )
         let url = directory.appendingPathComponent(name)
-        try TissueCheckpointArchive.write(checkpoint, to: url, compression: compression)
+        try TissueCheckpointArchive.write(
+            checkpoint,
+            to: url,
+            compression: compression
+        )
         try prune()
         return url
     }
 
-    public func latest(expectedModelDigest: UInt64? = nil) throws -> TissueCheckpoint? {
+    public func latest(
+        expectedModelDigest: UInt64? = nil
+    ) throws -> TissueCheckpoint? {
         guard let url = try checkpointURLs().last else { return nil }
-        return try TissueCheckpointArchive.read(from: url, expectedModelDigest: expectedModelDigest)
+        return try TissueCheckpointArchive.read(
+            from: url,
+            expectedModelDigest: expectedModelDigest
+        )
     }
 
     public func checkpointURLs() throws -> [URL] {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "ntissue" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard FileManager.default.fileExists(atPath: directory.path) else {
+            return []
+        }
+        return try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        .filter { $0.pathExtension == "ntissue" }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     private func prune() throws {
         let urls = try checkpointURLs()
         guard urls.count > retainedCheckpointCount else { return }
-        for url in urls.prefix(urls.count - retainedCheckpointCount) { try FileManager.default.removeItem(at: url) }
+        for url in urls.prefix(urls.count - retainedCheckpointCount) {
+            try FileManager.default.removeItem(at: url)
+        }
     }
 }
 
@@ -312,6 +473,26 @@ public enum TissueStateDigest {
     }
 }
 
+private struct TissueCheckpointAuxiliaryState: Encodable {
+    var opaqueModelState: Data?
+    var suiteParticipantState: [String: Data]
+}
+
+private enum TissueCheckpointAuxiliaryDigest {
+    static func compute(
+        opaqueModelState: Data?,
+        suiteParticipantState: [String: Data]
+    ) throws -> ScientificSHA256Digest {
+        let value = TissueCheckpointAuxiliaryState(
+            opaqueModelState: opaqueModelState,
+            suiteParticipantState: suiteParticipantState
+        )
+        return ScientificSHA256Digest(
+            data: try ScientificCanonicalJSON.encode(value)
+        )
+    }
+}
+
 private enum CRC64 {
     private static let polynomial: UInt64 = 0x42F0_E1EB_A9EA_3693
 
@@ -320,7 +501,9 @@ private enum CRC64 {
         for byte in data {
             crc ^= UInt64(byte) << 56
             for _ in 0..<8 {
-                crc = crc & 0x8000_0000_0000_0000 != 0 ? (crc << 1) ^ polynomial : crc << 1
+                crc = crc & 0x8000_0000_0000_0000 != 0
+                    ? (crc << 1) ^ polynomial
+                    : crc << 1
             }
         }
         return crc
@@ -341,22 +524,44 @@ public enum TissueCheckpointError: Error, Sendable, CustomStringConvertible {
     case manifestStateMismatch
     case modelDigestMismatch
     case stateDigestMismatch(expected: UInt64, actual: UInt64)
+    case missingAuxiliaryStateDigest
+    case auxiliaryStateDigestMismatch(
+        expected: ScientificSHA256Digest,
+        actual: ScientificSHA256Digest
+    )
 
     public var description: String {
         switch self {
-        case .invalidMagic: return "File is not a NumiTissue checkpoint"
-        case .truncated: return "NumiTissue checkpoint is truncated"
-        case .invalidLength: return "NumiTissue checkpoint has invalid lengths"
-        case .unsupportedVersion(let value): return "Unsupported NumiTissue checkpoint version \(value)"
-        case .unsupportedCompression(let value): return "Unsupported NumiTissue checkpoint compression \(value)"
-        case .compressionUnavailable: return "Checkpoint compression is unavailable on this platform"
-        case .compressionFailed: return "Checkpoint compression failed"
-        case .decompressionFailed: return "Checkpoint decompression failed"
-        case .checksum: return "Checkpoint checksum failed"
-        case .headerEncoding: return "Checkpoint header encoding failed"
-        case .manifestStateMismatch: return "Checkpoint manifest and state epoch/time disagree"
-        case .modelDigestMismatch: return "Checkpoint model digest does not match"
-        case .stateDigestMismatch(let expected, let actual): return "Checkpoint state digest mismatch: expected \(expected), received \(actual)"
+        case .invalidMagic:
+            return "File is not a NumiTissue checkpoint"
+        case .truncated:
+            return "NumiTissue checkpoint is truncated"
+        case .invalidLength:
+            return "NumiTissue checkpoint has invalid lengths"
+        case .unsupportedVersion(let value):
+            return "Unsupported NumiTissue checkpoint version \(value)"
+        case .unsupportedCompression(let value):
+            return "Unsupported NumiTissue checkpoint compression \(value)"
+        case .compressionUnavailable:
+            return "Checkpoint compression is unavailable on this platform"
+        case .compressionFailed:
+            return "Checkpoint compression failed"
+        case .decompressionFailed:
+            return "Checkpoint decompression failed"
+        case .checksum:
+            return "Checkpoint checksum failed"
+        case .headerEncoding:
+            return "Checkpoint header encoding failed"
+        case .manifestStateMismatch:
+            return "Checkpoint manifest and state epoch/time disagree"
+        case .modelDigestMismatch:
+            return "Checkpoint model digest does not match"
+        case .stateDigestMismatch(let expected, let actual):
+            return "Checkpoint state digest mismatch: expected \(expected), received \(actual)"
+        case .missingAuxiliaryStateDigest:
+            return "Checkpoint does not contain its required auxiliary-state digest"
+        case .auxiliaryStateDigestMismatch(let expected, let actual):
+            return "Checkpoint auxiliary-state digest mismatch: expected \(expected), received \(actual)"
         }
     }
 }

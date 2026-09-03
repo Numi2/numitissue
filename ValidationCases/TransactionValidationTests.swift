@@ -239,6 +239,8 @@ final class TransactionValidationTests: XCTestCase {
             metadata: ["case": "transaction.checkpoint-pending-events"],
             participantState: ["test-participant": participant]
         )
+        XCTAssertEqual(checkpoint.manifest.formatVersion, 2)
+        XCTAssertNotNil(checkpoint.manifest.auxiliaryStateDigest)
         XCTAssertNotNil(checkpoint.opaqueModelState)
         XCTAssertEqual(
             checkpoint.suiteParticipantState["test-participant"],
@@ -289,6 +291,24 @@ final class TransactionValidationTests: XCTestCase {
             1.5,
             accuracy: 1e-7
         )
+    }
+
+    func testCheckpointAuxiliaryDigestRejectsInMemoryTampering() throws {
+        var checkpoint = try TissueCheckpoint.make(
+            state: ValidationFixtures.passiveState(),
+            simulatorVersion: "validation",
+            randomSeed: 1,
+            modelDigest: ValidationFixtures.modelDigest,
+            opaqueModelState: Data([1, 2, 3]),
+            suiteParticipantState: ["participant": Data([4, 5, 6])]
+        )
+        checkpoint.opaqueModelState?.append(7)
+
+        XCTAssertThrowsError(try checkpoint.validated()) { error in
+            guard case TissueCheckpointError.auxiliaryStateDigestMismatch = error else {
+                return XCTFail("Unexpected auxiliary-state error: \(error)")
+            }
+        }
     }
 
     func testCheckpointArchiveRejectsCorruption() async throws {

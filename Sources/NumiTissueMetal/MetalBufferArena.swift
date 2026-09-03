@@ -136,6 +136,7 @@ public final class MetalStateArena: @unchecked Sendable {
 
         let commandBuffer = try context.makeTransferCommandBuffer(label: "NumiTissue.initialUpload")
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { throw MetalRuntimeError.encoderCreationFailed("initialUpload") }
+        context.telemetry.recordBlitEncoder()
         var staging: [MTLBuffer] = []
         try upload(tiles, to: committed.tiles, staging: &staging, blit: blit, label: "tiles")
         try upload(cells, to: committed.cells, staging: &staging, blit: blit, label: "cells")
@@ -148,7 +149,7 @@ public final class MetalStateArena: @unchecked Sendable {
         try upload(microdomains, to: committed.microdomains, staging: &staging, blit: blit, label: "microdomains")
         try upload(state.molecularSpecies, to: committed.molecularSpecies, staging: &staging, blit: blit, label: "molecular")
         blit.endEncoding()
-        try await context.awaitCompletion(commandBuffer)
+        try await context.awaitCompletion(MetalCommandBufferHandle(commandBuffer))
         try await copyCommittedToShadow()
         committedCPUState = state
         _ = staging
@@ -157,6 +158,7 @@ public final class MetalStateArena: @unchecked Sendable {
     public func copyCommittedToShadow() async throws {
         let commandBuffer = try context.makeCommandBuffer(label: "NumiTissue.beginShadow")
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { throw MetalRuntimeError.encoderCreationFailed("beginShadow") }
+        context.telemetry.recordBlitEncoder()
         copy(source: committed.tiles, destination: shadow.tiles, blit: blit)
         copy(source: committed.cells, destination: shadow.cells, blit: blit)
         copy(source: committed.regulatoryState, destination: shadow.regulatoryState, blit: blit)
@@ -168,7 +170,7 @@ public final class MetalStateArena: @unchecked Sendable {
         copy(source: committed.microdomains, destination: shadow.microdomains, blit: blit)
         copy(source: committed.molecularSpecies, destination: shadow.molecularSpecies, blit: blit)
         blit.endEncoding()
-        try await context.awaitCompletion(commandBuffer)
+        try await context.awaitCompletion(MetalCommandBufferHandle(commandBuffer))
     }
 
     /// Commit is an O(1) ownership swap after the final command buffer and validation readback finish.
@@ -185,6 +187,7 @@ public final class MetalStateArena: @unchecked Sendable {
 
     public func updateHeader(_ header: MetalSimulationHeader) {
         transient.header.contents().copyMemory(from: [header], byteCount: MemoryLayout<MetalSimulationHeader>.stride)
+        context.telemetry.recordUpload(bytes: MemoryLayout<MetalSimulationHeader>.stride)
     }
 
     public func uploadInput(events: [RoutedEvent], stimuli: [TissueStimulus]) throws {
@@ -193,6 +196,7 @@ public final class MetalStateArena: @unchecked Sendable {
         let metalEvents = events.map(MetalEvent.init)
         metalEvents.withUnsafeBytes { bytes in
             if let base = bytes.baseAddress { transient.inputEvents.contents().copyMemory(from: base, byteCount: bytes.count) }
+            context.telemetry.recordUpload(bytes: bytes.count)
         }
         let metalStimuli = stimuli.map { stimulus in
             MetalEvent(RoutedEvent(
@@ -207,6 +211,7 @@ public final class MetalStateArena: @unchecked Sendable {
         }
         metalStimuli.withUnsafeBytes { bytes in
             if let base = bytes.baseAddress { transient.stimuli.contents().copyMemory(from: base, byteCount: bytes.count) }
+            context.telemetry.recordUpload(bytes: bytes.count)
         }
     }
 
@@ -224,6 +229,7 @@ public final class MetalStateArena: @unchecked Sendable {
             if let base = source.baseAddress { buffer.contents().copyMemory(from: base, byteCount: source.count) }
         }
         blit.copy(from: buffer, sourceOffset: 0, to: destination, destinationOffset: 0, size: bytes)
+        context.telemetry.recordUpload(bytes: bytes)
         staging.append(buffer)
     }
 }

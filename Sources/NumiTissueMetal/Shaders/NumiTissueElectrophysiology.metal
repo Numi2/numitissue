@@ -13,6 +13,15 @@ constant float NT_DEFAULT_EK = -77.0f;
 constant float NT_DEFAULT_ELEAK = -54.387f;
 constant float NT_SPIKE_THRESHOLD = -20.0f;
 constant uint NT_REFRACTORY_TICKS = 80u;
+constant uint NT_CHANNEL_PARAMETER_STRIDE = 12u;
+constant uint NT_MECHANISM_SET_PARAMETER_STRIDE = 4u;
+constant uint NT_CELL_PROGRAM_PARAMETER_STRIDE = 8u;
+
+inline uint nt_mechanism_base(const NTCompartmentState compartment, uint gid) {
+    return compartment.mechanismRange.count >= NT_MECHANISM_STRIDE
+        ? compartment.mechanismRange.lowerBound
+        : gid * NT_MECHANISM_STRIDE;
+}
 
 inline float nt_vtrap(float x, float y) {
     const float ratio = x / y;
@@ -43,15 +52,84 @@ inline float nt_rush_larsen(float state, float alpha, float beta, float dt) {
     return infinity + (state - infinity) * exp(-sum * dt);
 }
 
+inline void nt_resolve_hh_parameters(
+    const NTCompartmentState compartment,
+    device const uint4* channelMetadata,
+    device const uint4* mechanismSetMetadata,
+    device const float* channelParameters,
+    device const float* mechanismSetParameters,
+    uint channelCount,
+    uint mechanismSetCount,
+    thread float& gNa,
+    thread float& gK,
+    thread float& gLeak,
+    thread float& eNa,
+    thread float& eK,
+    thread float& eLeak,
+    thread float& thermalScale
+) {
+    gNa = NT_DEFAULT_GNA;
+    gK = NT_DEFAULT_GK;
+    gLeak = NT_DEFAULT_GLEAK;
+    eNa = NT_DEFAULT_ENA;
+    eK = NT_DEFAULT_EK;
+    eLeak = NT_DEFAULT_ELEAK;
+    thermalScale = 1.0f;
+
+    const uint mechanismSetIndex = compartment.flags & 0xFFFFu;
+    if (mechanismSetIndex >= mechanismSetCount) { return; }
+    const uint4 range = mechanismSetMetadata[mechanismSetIndex];
+    const uint thermalBase = mechanismSetIndex * NT_MECHANISM_SET_PARAMETER_STRIDE;
+    thermalScale = max(mechanismSetParameters[thermalBase + 2u], 1.0e-4f);
+    const uint upper = min(range.x + range.y, channelCount);
+    for (uint channelIndex = range.x; channelIndex < upper; ++channelIndex) {
+        const uint kind = channelMetadata[channelIndex].x & 0xFFFFu;
+        const uint base = channelIndex * NT_CHANNEL_PARAMETER_STRIDE;
+        const float conductance = max(channelParameters[base], 0.0f);
+        const float reversal = channelParameters[base + 1u];
+        switch (kind) {
+            case 0u: gLeak = conductance; eLeak = reversal; break;
+            case 1u: gNa = conductance; eNa = reversal; break;
+            case 2u: gK = conductance; eK = reversal; break;
+            default: break;
+        }
+    }
+}
+
 kernel void nt_update_channels(
     constant NTResources& r [[buffer(0)]],
+    device const uint4* channelMetadata [[buffer(1)]],
+    device const uint4* mechanismSetMetadata [[buffer(2)]],
+    device const float* channelParameters [[buffer(3)]],
+    device const float* mechanismSetParameters [[buffer(4)]],
+    device const float* cellProgramParameters [[buffer(5)]],
     uint gid [[thread_position_in_grid]]
 ) {
+    (void)cellProgramParameters;
     if (gid >= r.header->compartmentCount) { return; }
     device NTCompartmentState& compartment = r.compartments[gid];
-    const uint base = gid * NT_MECHANISM_STRIDE;
+    const uint base = nt_mechanism_base(compartment, gid);
+    if (base + NT_MECHANISM_STRIDE > r.header->compartmentCount * NT_MECHANISM_STRIDE) { return; }
     const float voltage = compartment.voltagePreviousCapacitanceAxial.x;
-    const float dt = max(r.header->dtMilliseconds, 1.0e-6f);
+
+    float modelGNa, modelGK, modelGLeak, modelENa, modelEK, modelELeak, thermalScale;
+    nt_resolve_hh_parameters(
+        compartment,
+        channelMetadata,
+        mechanismSetMetadata,
+        channelParameters,
+        mechanismSetParameters,
+        r.header->reserved3.z,
+        r.header->reserved3.w,
+        modelGNa,
+        modelGK,
+        modelGLeak,
+        modelENa,
+        modelEK,
+        modelELeak,
+        thermalScale
+    );
+    const float dt = max(r.header->dtMilliseconds * thermalScale, 1.0e-6f);
 
     float m = r.mechanismState[base + 0u];
     float h = r.mechanismState[base + 1u];
@@ -67,12 +145,12 @@ kernel void nt_update_channels(
     h = nt_rush_larsen(h, hRates.x, hRates.y, dt);
     n = nt_rush_larsen(n, nRates.x, nRates.y, dt);
 
-    const float gNaMax = r.mechanismState[base + 4u] > 0.0f ? r.mechanismState[base + 4u] : NT_DEFAULT_GNA;
-    const float gKMax = r.mechanismState[base + 5u] > 0.0f ? r.mechanismState[base + 5u] : NT_DEFAULT_GK;
-    const float gLeak = r.mechanismState[base + 6u] > 0.0f ? r.mechanismState[base + 6u] : NT_DEFAULT_GLEAK;
-    const float eNa = isfinite(r.mechanismState[base + 7u]) && r.mechanismState[base + 7u] != 0.0f ? r.mechanismState[base + 7u] : NT_DEFAULT_ENA;
-    const float eK = isfinite(r.mechanismState[base + 8u]) && r.mechanismState[base + 8u] != 0.0f ? r.mechanismState[base + 8u] : NT_DEFAULT_EK;
-    const float eLeak = isfinite(r.mechanismState[base + 9u]) && r.mechanismState[base + 9u] != 0.0f ? r.mechanismState[base + 9u] : NT_DEFAULT_ELEAK;
+    const float gNaMax = r.mechanismState[base + 4u] > 0.0f ? r.mechanismState[base + 4u] : modelGNa;
+    const float gKMax = r.mechanismState[base + 5u] > 0.0f ? r.mechanismState[base + 5u] : modelGK;
+    const float gLeak = r.mechanismState[base + 6u] > 0.0f ? r.mechanismState[base + 6u] : modelGLeak;
+    const float eNa = isfinite(r.mechanismState[base + 7u]) && r.mechanismState[base + 7u] != 0.0f ? r.mechanismState[base + 7u] : modelENa;
+    const float eK = isfinite(r.mechanismState[base + 8u]) && r.mechanismState[base + 8u] != 0.0f ? r.mechanismState[base + 8u] : modelEK;
+    const float eLeak = isfinite(r.mechanismState[base + 9u]) && r.mechanismState[base + 9u] != 0.0f ? r.mechanismState[base + 9u] : modelELeak;
 
     const float gNa = gNaMax * m * m * m * h;
     const float gK = gKMax * n * n * n * n;
@@ -92,7 +170,7 @@ kernel void nt_assemble_cable_system(
 ) {
     if (gid >= r.header->compartmentCount) { return; }
     device NTCompartmentState& compartment = r.compartments[gid];
-    const uint base = gid * NT_MECHANISM_STRIDE;
+    const uint base = nt_mechanism_base(compartment, gid);
     const float dt = max(r.header->dtMilliseconds, 1.0e-6f);
     const float voltage = compartment.voltagePreviousCapacitanceAxial.x;
     const float capacitance = max(compartment.voltagePreviousCapacitanceAxial.z, 1.0e-8f);
@@ -108,8 +186,6 @@ kernel void nt_assemble_cable_system(
     atomic_fetch_add_explicit(&r.counters->activeCompartments, 1u, memory_order_relaxed);
 }
 
-/// Exact Hines elimination for all compartments whose encoded depth equals header.reserved2.x.
-/// Siblings atomically accumulate independent Schur contributions into their parent.
 kernel void nt_eliminate_cable_levels(
     constant NTResources& r [[buffer(0)]],
     uint gid [[thread_position_in_grid]]
@@ -119,8 +195,9 @@ kernel void nt_eliminate_cable_levels(
     const uint depth = (child.flags >> 16u) & 0xFFu;
     if (depth != r.header->reserved2.x || child.parentIndex == NT_INVALID_INDEX || child.parentIndex >= r.header->compartmentCount) { return; }
 
-    const uint childBase = gid * NT_MECHANISM_STRIDE;
-    const uint parentBase = child.parentIndex * NT_MECHANISM_STRIDE;
+    const uint childBase = nt_mechanism_base(child, gid);
+    const NTCompartmentState parent = r.compartments[child.parentIndex];
+    const uint parentBase = nt_mechanism_base(parent, child.parentIndex);
     const float diagonal = max(r.mechanismState[childBase + 12u], 1.0e-12f);
     const float axial = max(child.voltagePreviousCapacitanceAxial.w, 0.0f);
     const float diagonalContribution = -(axial * axial) / diagonal;
@@ -139,7 +216,7 @@ kernel void nt_solve_cable_roots(
     if (gid >= r.header->compartmentCount) { return; }
     device NTCompartmentState& compartment = r.compartments[gid];
     if (compartment.parentIndex != NT_INVALID_INDEX) { return; }
-    const uint base = gid * NT_MECHANISM_STRIDE;
+    const uint base = nt_mechanism_base(compartment, gid);
     const float diagonal = max(r.mechanismState[base + 12u], 1.0e-12f);
     r.mechanismState[base + 14u] = r.mechanismState[base + 13u] / diagonal;
 }
@@ -152,8 +229,9 @@ kernel void nt_back_substitute_cable_levels(
     device NTCompartmentState& child = r.compartments[gid];
     const uint depth = (child.flags >> 16u) & 0xFFu;
     if (depth != r.header->reserved2.x || child.parentIndex == NT_INVALID_INDEX || child.parentIndex >= r.header->compartmentCount) { return; }
-    const uint base = gid * NT_MECHANISM_STRIDE;
-    const uint parentBase = child.parentIndex * NT_MECHANISM_STRIDE;
+    const uint base = nt_mechanism_base(child, gid);
+    const NTCompartmentState parent = r.compartments[child.parentIndex];
+    const uint parentBase = nt_mechanism_base(parent, child.parentIndex);
     const float diagonal = max(r.mechanismState[base + 12u], 1.0e-12f);
     const float axial = max(child.voltagePreviousCapacitanceAxial.w, 0.0f);
     r.mechanismState[base + 14u] = (r.mechanismState[base + 13u] + axial * r.mechanismState[parentBase + 14u]) / diagonal;
@@ -161,23 +239,31 @@ kernel void nt_back_substitute_cable_levels(
 
 kernel void nt_detect_spikes(
     constant NTResources& r [[buffer(0)]],
+    device const float* cellProgramParameters [[buffer(1)]],
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= r.header->compartmentCount) { return; }
     device NTCompartmentState& compartment = r.compartments[gid];
-    const uint base = gid * NT_MECHANISM_STRIDE;
+    const uint base = nt_mechanism_base(compartment, gid);
     const float previous = compartment.voltagePreviousCapacitanceAxial.x;
     const float voltage = r.mechanismState[base + 14u];
     compartment.voltagePreviousCapacitanceAxial.y = previous;
     compartment.voltagePreviousCapacitanceAxial.x = voltage;
 
+    float threshold = NT_SPIKE_THRESHOLD;
+    if (compartment.neuronIndex < r.header->cellCount) {
+        const uint program = r.cells[compartment.neuronIndex].typeAndDevelopment & 0xFFFFu;
+        const float candidate = cellProgramParameters[program * NT_CELL_PROGRAM_PARAMETER_STRIDE + 7u];
+        if (isfinite(candidate) && candidate < 100.0f && candidate > -150.0f) { threshold = candidate; }
+    }
+
     const ulong currentTick = nt_u64(r.header->phaseEndTickLo, r.header->phaseEndTickHi);
     const ulong refractoryUntil = nt_u64(compartment.refractoryTickLo, compartment.refractoryTickHi);
-    const bool crossing = previous < NT_SPIKE_THRESHOLD && voltage >= NT_SPIKE_THRESHOLD;
+    const bool crossing = previous < threshold && voltage >= threshold;
     if (!crossing || currentTick < refractoryUntil) { return; }
 
     const float denominator = max(voltage - previous, 1.0e-6f);
-    const float fraction = clamp((NT_SPIKE_THRESHOLD - previous) / denominator, 0.0f, 1.0f);
+    const float fraction = clamp((threshold - previous) / denominator, 0.0f, 1.0f);
     const ulong startTick = nt_u64(r.header->phaseStartTickLo, r.header->phaseStartTickHi);
     const ulong crossingTick = startTick + ulong(fraction * float(max(r.header->fastQuantumTicks, 1u)));
     const uint slot = atomic_fetch_add_explicit(&r.counters->generatedSpikesLo, 1u, memory_order_relaxed);

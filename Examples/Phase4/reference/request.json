@@ -1,0 +1,51 @@
+{
+  "inputs": [
+    {
+      "byteCount": 382,
+      "id": "model",
+      "mediaType": "application/json",
+      "metadata": {},
+      "relativePath": "passive-rc.json",
+      "role": "model",
+      "sha256": "aa501471b5a0e7d9a8044ebdc5b53bbfba657d55981feaca17a18e24a11273a3"
+    }
+  ],
+  "metadata": {
+    "example": "phase4"
+  },
+  "operation": "simulate",
+  "parameters": {
+    "engine": "analytic-passive-rc",
+    "engineSource": "Numi2/numitissue:analytic-passive-rc-v1",
+    "engineVersion": "1"
+  },
+  "requestID": "phase4-reference-passive-rc",
+  "schemaVersion": 1,
+  "selection": {
+    "electrodeIDs": [],
+    "featureNames": [],
+    "maximumOutputBytes": 16777216,
+    "maximumRecords": 1000,
+    "maximumSamplesPerSeries": 1000000,
+    "metadata": {},
+    "objectPaths": [],
+    "subjectIDs": []
+  },
+  "sidecar": "reference",
+  "toolchain": {
+    "implementation": "numitissue-reference",
+    "implementationVersion": "1",
+    "metadata": {
+      "engine-policy": "fixed-allowlist-and-request-pinned",
+      "entrypoint": "Tools/numitissue-reference/numitissue_reference.py",
+      "h5py-source": "h5py/h5py@b2f0347c4200333acd89b43733f1caa0c115162f"
+    },
+    "packageVersions": {
+      "h5py": "3.16.0"
+    },
+    "runtime": "python",
+    "runtimeVersion": ">=3.11,<3.15",
+    "sidecar": "reference",
+    "standardVersions": {}
+  }
+}

@@ -254,12 +254,102 @@ public protocol NumanXTransactionalEndpoint: Sendable {
 
 public extension RuntimeInputFrame {
     init(command: NumiBrainTissueCommand, observation: NumanXObservationFrame) {
+        let namespace = command.afferentProjection.routeNamespace == 0
+            ? 0x4E54_0000_0000_0000
+            : command.afferentProjection.routeNamespace
+        var events = command.afferentProjection.events
+        events.append(contentsOf: observation.sensoryEvents)
+        events.append(contentsOf: observation.injuryEvents)
+        events.append(contentsOf: Self.encodeAnalog(
+            command.afferentProjection.analogChannels,
+            lane: 0,
+            namespace: namespace,
+            tick: observation.time.tick
+        ))
+        events.append(contentsOf: Self.encodeAnalog(
+            observation.proprioception,
+            lane: 1,
+            namespace: namespace,
+            tick: observation.time.tick
+        ))
+        events.append(contentsOf: Self.encodeAnalog(
+            observation.touch,
+            lane: 2,
+            namespace: namespace,
+            tick: observation.time.tick
+        ))
+        events.append(contentsOf: Self.encodeAnalog(
+            observation.vestibular,
+            lane: 3,
+            namespace: namespace,
+            tick: observation.time.tick
+        ))
+        events.append(contentsOf: Self.encodeAnalog(
+            observation.interoception,
+            lane: 4,
+            namespace: namespace,
+            tick: observation.time.tick
+        ))
+        events.sort()
+
+        let chemical = observation.chemicalBoundary
+        let metabolic = SIMD8<Float>(
+            chemical.oxygen,
+            chemical.glucose,
+            chemical.lactate,
+            chemical.extracellularPotassium,
+            chemical.extracellularCalcium,
+            chemical.temperatureKelvin,
+            chemical.pH,
+            chemical.perfusion
+        )
         self.init(
-            afferentEvents: command.afferentProjection.events + observation.sensoryEvents + observation.injuryEvents,
-            analogInputs: command.afferentProjection.analogChannels + observation.proprioception + observation.touch + observation.vestibular + observation.interoception,
+            afferentEvents: events,
+            stimuli: command.stimulation,
             neuromodulators: command.neuromodulators,
             hormones: command.hormones,
-            stimuli: command.stimulation
+            metabolicBoundary: metabolic,
+            mechanicalBoundaryToken: Self.mechanicalToken(observation.mechanicalBoundary),
+            behavioralContextToken: namespace
         )
+    }
+
+    private static func encodeAnalog(
+        _ values: [Float],
+        lane: UInt64,
+        namespace: UInt64,
+        tick: UInt64
+    ) -> [RoutedEvent] {
+        values.enumerated().compactMap { index, value in
+            guard value.isFinite else { return nil }
+            let laneBits = (lane & 0xFF) << 48
+            let indexBits = UInt64(UInt32(clamping: index))
+            return RoutedEvent(
+                arrivalTick: tick,
+                source: namespace ^ laneBits,
+                destination: namespace ^ laneBits ^ indexBits,
+                amplitude: value,
+                kind: .analogAfferent,
+                flags: UInt16(truncatingIfNeeded: lane),
+                sequence: UInt32(clamping: index)
+            )
+        }
+    }
+
+    private static func mechanicalToken(_ boundary: TissueMechanicalBoundary) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        func mix(_ value: Float) {
+            hash ^= UInt64(value.bitPattern)
+            hash &*= 0x0000_0100_0000_01b3
+        }
+        for value in boundary.deformationGradient { mix(value) }
+        for value in boundary.strain { mix(value) }
+        for value in boundary.stress { mix(value) }
+        mix(boundary.pressure)
+        mix(boundary.damage)
+        mix(boundary.temperatureKelvin)
+        for value in boundary.boundaryVelocity { mix(value) }
+        for value in boundary.worldTransform { mix(value) }
+        return hash
     }
 }

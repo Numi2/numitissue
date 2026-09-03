@@ -102,8 +102,9 @@ public final class MetalFloatParameterTable: @unchecked Sendable {
                     staging.contents().copyMemory(from: source, byteCount: bytes.count)
                 }
             }
-            blit.copy(from: staging, sourceOffset: 0, to: baseline, destinationOffset: 0, size: bytes(values))
-            blit.copy(from: staging, sourceOffset: 0, to: effective, destinationOffset: 0, size: bytes(values))
+            let byteCount = values.count * MemoryLayout<Float>.stride
+            blit.copy(from: staging, sourceOffset: 0, to: baseline, destinationOffset: 0, size: byteCount)
+            blit.copy(from: staging, sourceOffset: 0, to: effective, destinationOffset: 0, size: byteCount)
             retained.append(staging)
         } else {
             blit.fill(buffer: baseline, range: 0..<baseline.length, value: 0)
@@ -123,10 +124,6 @@ public final class MetalFloatParameterTable: @unchecked Sendable {
             size: min(baseline.length, effective.length)
         )
     }
-
-    private func bytes(_ values: [Float]) -> Int {
-        values.count * MemoryLayout<Float>.stride
-    }
 }
 
 public final class MetalModelBuffers: @unchecked Sendable {
@@ -137,11 +134,14 @@ public final class MetalModelBuffers: @unchecked Sendable {
     public let molecularReactions: MTLBuffer
     public let channelMetadata: MTLBuffer
     public let mechanismSetMetadata: MTLBuffer
+    public let cellProgramIdentity: MTLBuffer
+    public let cellProgramMetadata: MTLBuffer
     public let parameterTables: [RuntimeOverlayDomain: MetalFloatParameterTable]
     public let networkCount: Int
     public let reactionCount: Int
     public let channelCount: Int
     public let mechanismSetCount: Int
+    public let cellProgramCount: Int
 
     public init(
         context: MetalDeviceContext,
@@ -152,6 +152,7 @@ public final class MetalModelBuffers: @unchecked Sendable {
         reactionCount = program.reactions.count
         channelCount = model.channelParameters.count
         mechanismSetCount = model.mechanismSets.count
+        cellProgramCount = model.cellPrograms.count
 
         molecularNetworks = try context.makePrivateBuffer(
             length: max(1, program.networks.count) * MemoryLayout<MetalMolecularNetworkABI>.stride,
@@ -173,6 +174,14 @@ public final class MetalModelBuffers: @unchecked Sendable {
             length: max(1, model.mechanismSets.count) * MemoryLayout<UInt4>.stride,
             label: "NumiTissue.model.mechanismSetMetadata"
         )
+        cellProgramIdentity = try context.makePrivateBuffer(
+            length: max(1, model.cellPrograms.count) * MemoryLayout<UInt4>.stride,
+            label: "NumiTissue.model.cellProgramIdentity"
+        )
+        cellProgramMetadata = try context.makePrivateBuffer(
+            length: max(1, model.cellPrograms.count) * MemoryLayout<UInt4>.stride,
+            label: "NumiTissue.model.cellProgramMetadata"
+        )
 
         let command = try context.makeTransferCommandBuffer(label: "NumiTissue.modelUpload")
         var retained: [MTLBuffer] = []
@@ -181,6 +190,8 @@ public final class MetalModelBuffers: @unchecked Sendable {
         try Self.stage(program.reactions, to: molecularReactions, context: context, command: command, retained: &retained, label: "molecularReactions.effective")
         try Self.stage(model.channelParameters.map(\.kindAndPowers), to: channelMetadata, context: context, command: command, retained: &retained, label: "channelMetadata")
         try Self.stage(model.mechanismSets.map(\.channelRange), to: mechanismSetMetadata, context: context, command: command, retained: &retained, label: "mechanismSetMetadata")
+        try Self.stage(model.cellPrograms.map(\.identity), to: cellProgramIdentity, context: context, command: command, retained: &retained, label: "cellProgramIdentity")
+        try Self.stage(model.cellPrograms.map(\.programIndices), to: cellProgramMetadata, context: context, command: command, retained: &retained, label: "cellProgramMetadata")
 
         var tables: [RuntimeOverlayDomain: MetalFloatParameterTable] = [:]
         func add(_ domain: RuntimeOverlayDomain, stride: Int, values: [Float]) throws {
@@ -194,34 +205,33 @@ public final class MetalModelBuffers: @unchecked Sendable {
             )
         }
         try add(.channelParameter, stride: 12, values: Self.flattenChannels(model.channelParameters))
-        try add(.mechanismSetParameter, stride: 4, values: model.mechanismSets.flatMap { Self.values($0.thermal) })
+        try add(.mechanismSetParameter, stride: 4, values: model.mechanismSets.flatMap { Self.floatValues($0.thermal) })
         try add(.synapseParameter, stride: 16, values: model.synapseParameters.flatMap {
-            Self.values($0.kinetics) + Self.values($0.shortTerm) + Self.values($0.stdp0) + Self.values($0.stdp1)
+            Self.floatValues($0.kinetics) + Self.floatValues($0.shortTerm) + Self.floatValues($0.stdp0) + Self.floatValues($0.stdp1)
         })
         try add(.fieldParameter, stride: 8, values: model.fieldParameters.flatMap {
-            Self.values($0.dynamics) + Self.values($0.bounds)
+            Self.floatValues($0.dynamics) + Self.floatValues($0.bounds)
         })
         try add(.cellProgramParameter, stride: 8, values: model.cellPrograms.flatMap {
-            Self.values($0.mechanics) + Self.values($0.membrane)
+            Self.floatValues($0.mechanics) + Self.floatValues($0.membrane)
         })
         try add(.regulatoryProgramParameter, stride: 12, values: model.regulatoryPrograms.flatMap {
-            Self.values($0.timeConstants0) + Self.values($0.timeConstants1) + Self.values($0.hazards)
+            Self.floatValues($0.timeConstants0) + Self.floatValues($0.timeConstants1) + Self.floatValues($0.hazards)
         })
         try add(.fateTransitionParameter, stride: 12, values: model.fateTransitions.flatMap {
-            Self.values($0.hazard) + Self.values($0.regulatoryWeights) + Self.values($0.fieldWeights)
+            Self.floatValues($0.hazard) + Self.floatValues($0.regulatoryWeights) + Self.floatValues($0.fieldWeights)
         })
         try add(.growthProgramParameter, stride: 12, values: model.growthPrograms.flatMap {
-            Self.values($0.rates) + Self.values($0.guidance0) + Self.values($0.guidance1)
+            Self.floatValues($0.rates) + Self.floatValues($0.guidance0) + Self.floatValues($0.guidance1)
         })
         try add(.glialProgramParameter, stride: 16, values: model.glialPrograms.flatMap {
-            Self.values($0.uptakeRates) + Self.values($0.releaseRates) + Self.values($0.activationThresholds) + Self.values($0.spatial)
+            Self.floatValues($0.uptakeRates) + Self.floatValues($0.releaseRates) + Self.floatValues($0.activationThresholds) + Self.floatValues($0.spatial)
         })
         try add(.molecularReactionParameter, stride: 2, values: program.reactions.flatMap {
             [$0.rateConstant, $0.reverseRateConstant]
         })
         parameterTables = tables
 
-        command.commit()
         try await context.awaitCompletion(command)
         _ = retained
     }
@@ -251,11 +261,15 @@ public final class MetalModelBuffers: @unchecked Sendable {
         blit.endEncoding()
     }
 
-    private static func flattenChannels(_ values: [GPUChannelParameter]) -> [Float] {
-        values.flatMap { values($0.conductance) + values($0.activation) + values($0.inactivation) }
+    private static func flattenChannels(_ parameters: [GPUChannelParameter]) -> [Float] {
+        parameters.flatMap {
+            Self.floatValues($0.conductance) +
+            Self.floatValues($0.activation) +
+            Self.floatValues($0.inactivation)
+        }
     }
 
-    private static func values(_ vector: Float4) -> [Float] {
+    private static func floatValues(_ vector: Float4) -> [Float] {
         [vector.x, vector.y, vector.z, vector.w]
     }
 

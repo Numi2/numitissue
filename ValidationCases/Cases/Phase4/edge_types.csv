@@ -1,0 +1,2 @@
+edge_type_id,model_template,dynamics_params
+1,exp2syn,phase4_synapse.json

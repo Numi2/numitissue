@@ -34,12 +34,11 @@ struct Phase2Command {
     private static func inspect(_ url: URL) throws {
         let data = try Data(contentsOf: url, options: [.mappedIfSafe])
         let probe = try RuntimeValidationArtifactInspector.probe(data: data)
-        let artifactHash = ScientificSHA256Digest(data: data)
         let inspection = try inspectPayload(
             kind: probe.kind,
             data: data,
             path: url.path,
-            artifactHash: artifactHash
+            artifactHash: ScientificSHA256Digest(data: data)
         )
         try emitJSON(inspection)
     }
@@ -64,6 +63,7 @@ struct Phase2Command {
         output: URL
     ) throws {
         let data = try Data(contentsOf: input, options: [.mappedIfSafe])
+        let metadata = sourceMetadata(input, data: data)
         let wrapped: Data
         switch kind {
         case .differentialTransaction:
@@ -75,7 +75,7 @@ struct Phase2Command {
                 RuntimeValidationArtifact(
                     kind: kind,
                     payload: report,
-                    metadata: sourceMetadata(input)
+                    metadata: metadata
                 )
             )
         case .rollbackCertificate:
@@ -87,7 +87,7 @@ struct Phase2Command {
                 RuntimeValidationArtifact(
                     kind: kind,
                     payload: report,
-                    metadata: sourceMetadata(input)
+                    metadata: metadata
                 )
             )
         case .reproducibilityCertificate:
@@ -99,7 +99,7 @@ struct Phase2Command {
                 RuntimeValidationArtifact(
                     kind: kind,
                     payload: report,
-                    metadata: sourceMetadata(input)
+                    metadata: metadata
                 )
             )
         case .benchmarkReport:
@@ -111,7 +111,7 @@ struct Phase2Command {
                 RuntimeValidationArtifact(
                     kind: kind,
                     payload: report,
-                    metadata: sourceMetadata(input)
+                    metadata: metadata
                 )
             )
         case .compactStateDigest:
@@ -124,7 +124,7 @@ struct Phase2Command {
                 RuntimeValidationArtifact(
                     kind: kind,
                     payload: report,
-                    metadata: sourceMetadata(input)
+                    metadata: metadata
                 )
             )
             #else
@@ -173,7 +173,7 @@ struct Phase2Command {
                     "phases": String(report.phaseReports.count),
                     "outputComparisons": String(report.outputReports.count),
                     "validationBackends": String(report.validationOutcomes.count),
-                    "firstDivergentPhaseOrdinal": report.firstDivergentPhaseOrdinal.map(String.init) ?? "none"
+                    "firstDivergentPhaseOrdinal": report.firstDivergentPhaseOrdinal.map { String($0) } ?? "none"
                 ],
                 metadata: artifact.metadata
             )
@@ -191,7 +191,7 @@ struct Phase2Command {
                 summary: [
                     "trigger": report.trigger.rawValue,
                     "stateIdentityPreserved": String(report.stateIdentityPreserved),
-                    "checkpointIdentityPreserved": report.checkpointIdentityPreserved.map(String.init) ?? "not-required",
+                    "checkpointIdentityPreserved": report.checkpointIdentityPreserved.map { String($0) } ?? "not-required",
                     "triggeredFaults": String(report.triggeredFaults.count)
                 ],
                 metadata: artifact.metadata
@@ -231,10 +231,11 @@ struct Phase2Command {
                     "medianNanoseconds": String(report.statistics.medianNanoseconds),
                     "p95Nanoseconds": String(report.statistics.p95Nanoseconds),
                     "simulatedMillisecondsPerWallSecond": String(report.simulatedMillisecondsPerWallSecond),
-                    "energyJoules": report.telemetry?.energyJoules.map(String.init) ?? "not-measured"
+                    "energyJoules": report.telemetry?.energyJoules.map { String($0) } ?? "not-measured"
                 ],
                 metadata: artifact.metadata
             )
+        #if canImport(Metal)
         case .compactDigest(let artifact):
             let report = artifact.payload
             return Phase2ArtifactInspection(
@@ -254,6 +255,7 @@ struct Phase2Command {
                 ],
                 metadata: artifact.metadata
             )
+        #endif
         }
     }
 
@@ -329,12 +331,13 @@ struct Phase2Command {
         }
     }
 
-    private static func sourceMetadata(_ url: URL) -> [String: String] {
+    private static func sourceMetadata(
+        _ url: URL,
+        data: Data
+    ) -> [String: String] {
         [
             "source.file": url.lastPathComponent,
-            "source.sha256": ScientificSHA256Digest(
-                data: (try? Data(contentsOf: url, options: [.mappedIfSafe])) ?? Data()
-            ).description
+            "source.sha256": ScientificSHA256Digest(data: data).description
         ]
     }
 

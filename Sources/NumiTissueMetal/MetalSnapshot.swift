@@ -6,118 +6,134 @@ import NumiTissueRuntime
 
 public extension MetalStateArena {
     func downloadCommittedState() async throws -> TissueRuntimeState {
-        let template = committedCPUState
-        let tileStaging = try stagingBuffer(count: template.tiles.count, type: MetalTileState.self, label: "snapshot.tiles")
-        let cellStaging = try stagingBuffer(count: template.cells.count, type: MetalCellState.self, label: "snapshot.cells")
-        let regulatoryStaging = try stagingBuffer(count: template.regulatoryState.count, type: Float.self, label: "snapshot.regulatory")
-        let segmentStaging = try stagingBuffer(count: template.segments.count, type: MetalSegmentState.self, label: "snapshot.segments")
-        let compartmentStaging = try stagingBuffer(count: template.compartments.count, type: MetalCompartmentState.self, label: "snapshot.compartments")
-        let mechanismStaging = try stagingBuffer(count: template.mechanismState.count, type: Float.self, label: "snapshot.mechanisms")
-        let synapseStaging = try stagingBuffer(count: template.synapses.count, type: MetalSynapseState.self, label: "snapshot.synapses")
-        let fieldStaging = try stagingBuffer(count: template.fields.count, type: MetalFieldState.self, label: "snapshot.fields")
-        let microdomainStaging = try stagingBuffer(count: template.microdomains.count, type: MetalMicrodomainState.self, label: "snapshot.microdomains")
-        let molecularStaging = try stagingBuffer(count: template.molecularSpecies.count, type: Float.self, label: "snapshot.molecular")
+        try await downloadState(
+            from: committed,
+            template: committedCPUState,
+            label: "NumiTissue.snapshot.committed"
+        )
+    }
 
-        let command = try context.makeTransferCommandBuffer(label: "NumiTissue.snapshot")
-        guard let blit = command.makeBlitCommandEncoder() else { throw MetalRuntimeError.encoderCreationFailed("snapshot") }
-        copyIfNeeded(from: committed.tiles, to: tileStaging, count: template.tiles.count, type: MetalTileState.self, blit: blit)
-        copyIfNeeded(from: committed.cells, to: cellStaging, count: template.cells.count, type: MetalCellState.self, blit: blit)
-        copyIfNeeded(from: committed.regulatoryState, to: regulatoryStaging, count: template.regulatoryState.count, type: Float.self, blit: blit)
-        copyIfNeeded(from: committed.segments, to: segmentStaging, count: template.segments.count, type: MetalSegmentState.self, blit: blit)
-        copyIfNeeded(from: committed.compartments, to: compartmentStaging, count: template.compartments.count, type: MetalCompartmentState.self, blit: blit)
-        copyIfNeeded(from: committed.mechanismState, to: mechanismStaging, count: template.mechanismState.count, type: Float.self, blit: blit)
-        copyIfNeeded(from: committed.synapses, to: synapseStaging, count: template.synapses.count, type: MetalSynapseState.self, blit: blit)
-        copyIfNeeded(from: committed.fields, to: fieldStaging, count: template.fields.count, type: MetalFieldState.self, blit: blit)
-        copyIfNeeded(from: committed.microdomains, to: microdomainStaging, count: template.microdomains.count, type: MetalMicrodomainState.self, blit: blit)
-        copyIfNeeded(from: committed.molecularSpecies, to: molecularStaging, count: template.molecularSpecies.count, type: Float.self, blit: blit)
+    /// Downloads the transaction shadow using the committed topology only as a count and identity
+    /// template. This is used after GPU validation to derive fidelity and structural migrations
+    /// without making the CPU authoritative during the fast path.
+    func downloadShadowState() async throws -> TissueRuntimeState {
+        try await downloadState(
+            from: shadow,
+            template: committedCPUState,
+            label: "NumiTissue.snapshot.shadow"
+        )
+    }
+
+    private func downloadState(
+        from buffers: MetalStateBufferSet,
+        template: TissueRuntimeState,
+        label: String
+    ) async throws -> TissueRuntimeState {
+        let command = try context.makeTransferCommandBuffer(label: label)
+        guard let blit = command.makeBlitCommandEncoder() else {
+            throw MetalRuntimeError.encoderCreationFailed(label)
+        }
+
+        var staging: [MTLBuffer] = []
+        func stage(source: MTLBuffer, bytes: Int, name: String) throws -> MTLBuffer {
+            let length = max(bytes, 1)
+            let target = try context.makeSharedBuffer(
+                length: length,
+                label: "\(label).\(name)"
+            )
+            if bytes > 0 {
+                blit.copy(
+                    from: source,
+                    sourceOffset: 0,
+                    to: target,
+                    destinationOffset: 0,
+                    size: bytes
+                )
+            }
+            staging.append(target)
+            return target
+        }
+
+        let tileStage = try stage(source: buffers.tiles, bytes: template.tiles.count * MemoryLayout<MetalTileState>.stride, name: "tiles")
+        let cellStage = try stage(source: buffers.cells, bytes: template.cells.count * MemoryLayout<MetalCellState>.stride, name: "cells")
+        let regulatoryStage = try stage(source: buffers.regulatoryState, bytes: template.regulatoryState.count * MemoryLayout<Float>.stride, name: "regulatory")
+        let segmentStage = try stage(source: buffers.segments, bytes: template.segments.count * MemoryLayout<MetalSegmentState>.stride, name: "segments")
+        let compartmentStage = try stage(source: buffers.compartments, bytes: template.compartments.count * MemoryLayout<MetalCompartmentState>.stride, name: "compartments")
+        let mechanismStage = try stage(source: buffers.mechanismState, bytes: template.mechanismState.count * MemoryLayout<Float>.stride, name: "mechanisms")
+        let synapseStage = try stage(source: buffers.synapses, bytes: template.synapses.count * MemoryLayout<MetalSynapseState>.stride, name: "synapses")
+        let fieldStage = try stage(source: buffers.fields, bytes: template.fields.count * MemoryLayout<MetalFieldState>.stride, name: "fields")
+        let microdomainStage = try stage(source: buffers.microdomains, bytes: template.microdomains.count * MemoryLayout<MetalMicrodomainState>.stride, name: "microdomains")
+        let molecularStage = try stage(source: buffers.molecularSpecies, bytes: template.molecularSpecies.count * MemoryLayout<Float>.stride, name: "molecular")
         blit.endEncoding()
         try await context.awaitCompletion(command)
 
-        var result = template
-        result.tiles = read(tileStaging, count: template.tiles.count, as: MetalTileState.self).map(\.runtimeState)
-        result.cells = read(cellStaging, count: template.cells.count, as: MetalCellState.self).map(\.runtimeState)
-        result.regulatoryState = read(regulatoryStaging, count: template.regulatoryState.count, as: Float.self)
-        result.segments = read(segmentStaging, count: template.segments.count, as: MetalSegmentState.self).map(\.runtimeState)
-        result.compartments = read(compartmentStaging, count: template.compartments.count, as: MetalCompartmentState.self).map(\.runtimeState)
-        result.mechanismState = read(mechanismStaging, count: template.mechanismState.count, as: Float.self)
-        result.synapses = read(synapseStaging, count: template.synapses.count, as: MetalSynapseState.self).map(\.runtimeState)
-        result.fields = read(fieldStaging, count: template.fields.count, as: MetalFieldState.self).map(\.runtimeState)
-        result.microdomains = read(microdomainStaging, count: template.microdomains.count, as: MetalMicrodomainState.self).map(\.runtimeState)
-        result.molecularSpecies = read(molecularStaging, count: template.molecularSpecies.count, as: Float.self)
-        return result
+        var state = template
+        state.tiles = Self.read(MetalTileState.self, from: tileStage, count: template.tiles.count).map(\.runtimeState)
+        state.cells = Self.read(MetalCellState.self, from: cellStage, count: template.cells.count).map(\.runtimeState)
+        state.regulatoryState = Self.read(Float.self, from: regulatoryStage, count: template.regulatoryState.count)
+        state.segments = Self.read(MetalSegmentState.self, from: segmentStage, count: template.segments.count).map(\.runtimeState)
+        state.compartments = Self.read(MetalCompartmentState.self, from: compartmentStage, count: template.compartments.count).map(\.runtimeState)
+        state.mechanismState = Self.read(Float.self, from: mechanismStage, count: template.mechanismState.count)
+        state.synapses = Self.read(MetalSynapseState.self, from: synapseStage, count: template.synapses.count).map(\.runtimeState)
+        state.fields = Self.read(MetalFieldState.self, from: fieldStage, count: template.fields.count).map(\.runtimeState)
+        state.microdomains = Self.read(MetalMicrodomainState.self, from: microdomainStage, count: template.microdomains.count).map(\.runtimeState)
+        state.molecularSpecies = Self.read(Float.self, from: molecularStage, count: template.molecularSpecies.count)
+        _ = staging
+        return state
     }
 
-    private func stagingBuffer<T>(count: Int, type: T.Type, label: String) throws -> MTLBuffer {
-        try context.makeSharedBuffer(length: max(1, count) * MemoryLayout<T>.stride, label: "NumiTissue.\(label)")
-    }
-
-    private func copyIfNeeded<T>(from source: MTLBuffer, to destination: MTLBuffer, count: Int, type: T.Type, blit: MTLBlitCommandEncoder) {
-        guard count > 0 else { return }
-        blit.copy(from: source, sourceOffset: 0, to: destination, destinationOffset: 0, size: count * MemoryLayout<T>.stride)
-    }
-
-    private func read<T>(_ buffer: MTLBuffer, count: Int, as type: T.Type) -> [T] {
+    private static func read<T>(_ type: T.Type, from buffer: MTLBuffer, count: Int) -> [T] {
         guard count > 0 else { return [] }
         let pointer = buffer.contents().bindMemory(to: T.self, capacity: count)
         return Array(UnsafeBufferPointer(start: pointer, count: count))
     }
 }
 
-private extension MetalRange {
-    var runtimeRange: RuntimeRange { RuntimeRange(lowerBound: lowerBound, count: count) }
-}
-
 private extension MetalTileState {
-    var runtimeState: TileRuntimeState {
-        var result = TileRuntimeState(
+    var runtimeState: RuntimeTileState {
+        RuntimeTileState(
             id: TileID(rawValue: UInt64(idLo) | (UInt64(idHi) << 32)),
-            coordinate: TileCoordinate(x: coordinate.x, y: coordinate.y, z: coordinate.z)
+            coordinate: TileCoordinate(x: coordinate.x, y: coordinate.y, z: coordinate.z),
+            cellRange: cellRange.runtimeRange,
+            segmentRange: segmentRange.runtimeRange,
+            compartmentRange: compartmentRange.runtimeRange,
+            synapseRange: synapseRange.runtimeRange,
+            fieldRange: fieldRange.runtimeRange,
+            microdomainRange: microdomainRange.runtimeRange,
+            activityScore: scores.x,
+            uncertaintyScore: scores.y,
+            damageScore: scores.z,
+            metabolicStress: scores.w,
+            flags: flags,
+            lastActiveTick: UInt64(lastActiveTickLo) | (UInt64(lastActiveTickHi) << 32)
         )
-        result.flags = flags
-        result.fidelityMask = fidelityMask
-        result.cellRange = cellRange.runtimeRange
-        result.segmentRange = segmentRange.runtimeRange
-        result.compartmentRange = compartmentRange.runtimeRange
-        result.synapseRange = synapseRange.runtimeRange
-        result.fieldRange = fieldRange.runtimeRange
-        result.microdomainRange = microdomainRange.runtimeRange
-        result.lastActiveTick = UInt64(lastActiveTickLo) | (UInt64(lastActiveTickHi) << 32)
-        result.activityScore = scores.x
-        result.uncertaintyScore = scores.y
-        result.damageScore = scores.z
-        result.metabolicStress = scores.w
-        return result
     }
 }
 
 private extension MetalCellState {
     var runtimeState: RuntimeCellState {
-        let type = UInt16(truncatingIfNeeded: typeAndDevelopment)
-        let developmental = UInt16(truncatingIfNeeded: typeAndDevelopment >> 16)
-        let rawFidelity = UInt8(truncatingIfNeeded: fidelityAndFlags)
-        var result = RuntimeCellState(
+        RuntimeCellState(
             id: CellID(rawValue: UInt64(idLo) | (UInt64(idHi) << 32)),
-            lineage: LineageID(rawValue: UInt64(lineageLo) | (UInt64(lineageHi) << 32)),
+            lineageID: LineageID(rawValue: UInt64(lineageLo) | (UInt64(lineageHi) << 32)),
             tileIndex: tileIndex,
-            typeIndex: type,
-            developmentalState: developmental,
-            fidelity: FidelityLevel(rawValue: rawFidelity) ?? .cellAgent,
+            typeIndex: UInt16(truncatingIfNeeded: typeAndDevelopment),
+            developmentalState: DevelopmentalState(rawValue: UInt16(truncatingIfNeeded: typeAndDevelopment >> 16)) ?? .progenitor,
+            fidelity: FidelityLevel(rawValue: UInt8(truncatingIfNeeded: fidelityAndFlags)) ?? .cellAgent,
             position: position,
-            orientation: orientation,
-            semiAxes: semiAxes
+            orientation: orientationAndRadius,
+            semiAxes: semiAxes,
+            velocity: velocity,
+            ageSeconds: ageCycleDifferentiationEnergy.x,
+            cycleProgress: ageCycleDifferentiationEnergy.y,
+            differentiationProgress: ageCycleDifferentiationEnergy.z,
+            energyReserve: ageCycleDifferentiationEnergy.w,
+            oxygenStress: stressDamageHazard.x,
+            glucoseStress: stressDamageHazard.y,
+            damage: stressDamageHazard.z,
+            apoptosisHazard: stressDamageHazard.w,
+            regulatoryRange: regulatoryRange.runtimeRange,
+            flags: fidelityAndFlags >> 16
         )
-        result.flags = UInt8(truncatingIfNeeded: fidelityAndFlags >> 8)
-        result.velocity = velocity
-        result.ageSeconds = ageCycleDifferentiationEnergy.x
-        result.cycleProgress = ageCycleDifferentiationEnergy.y
-        result.differentiationProgress = ageCycleDifferentiationEnergy.z
-        result.energyReserve = ageCycleDifferentiationEnergy.w
-        result.oxygenStress = stressDamageHazard.x
-        result.glucoseStress = stressDamageHazard.y
-        result.damage = stressDamageHazard.z
-        result.apoptosisHazard = stressDamageHazard.w
-        result.regulatoryRange = regulatoryRange.runtimeRange
-        return result
     }
 }
 
@@ -127,17 +143,15 @@ private extension MetalSegmentState {
             id: SegmentID(rawValue: UInt64(idLo) | (UInt64(idHi) << 32)),
             cellIndex: cellIndex,
             parentSegmentIndex: parentSegmentIndex,
-            firstChildIndex: firstChildIndex,
-            nextSiblingIndex: nextSiblingIndex,
             compartmentIndex: compartmentIndex,
-            type: UInt16(truncatingIfNeeded: typeAndFlags),
-            flags: UInt16(truncatingIfNeeded: typeAndFlags >> 16),
+            kind: SegmentKind(rawValue: UInt16(truncatingIfNeeded: typeAndFlags)) ?? .soma,
             start: start,
             end: end,
             radiusMicrometers: radiusMyelinGrowthScore.x,
             myelinFraction: radiusMyelinGrowthScore.y,
             growthRateMicrometersPerSecond: radiusMyelinGrowthScore.z,
-            structuralScore: radiusMyelinGrowthScore.w
+            structuralScore: radiusMyelinGrowthScore.w,
+            flags: UInt16(truncatingIfNeeded: typeAndFlags >> 16)
         )
     }
 }
@@ -182,15 +196,15 @@ private extension MetalSynapseState {
             postTrace: prePostEligibilityConsolidation.y,
             eligibility: prePostEligibilityConsolidation.z,
             consolidation: prePostEligibilityConsolidation.w,
-            structuralScore: structuralReserved.x,
-            lastEventTick: UInt64(lastEventTickLo) | (UInt64(lastEventTickHi) << 32)
+            lastEventTick: UInt64(lastEventTickLo) | (UInt64(lastEventTickHi) << 32),
+            structuralScore: structuralReserved.x
         )
     }
 }
 
 private extension MetalFieldState {
-    var runtimeState: RuntimeFieldValue {
-        RuntimeFieldValue(
+    var runtimeState: RuntimeFieldState {
+        RuntimeFieldState(
             concentration: concentrationSourceSinkDiffusion.x,
             source: concentrationSourceSinkDiffusion.y,
             sink: concentrationSourceSinkDiffusion.z,
@@ -205,15 +219,20 @@ private extension MetalMicrodomainState {
             id: MicrodomainID(rawValue: UInt64(idLo) | (UInt64(idHi) << 32)),
             ownerCellIndex: ownerCellIndex,
             ownerCompartmentIndex: ownerCompartmentIndex,
-            reactionNetworkIndex: UInt16(truncatingIfNeeded: reactionSolverFlags),
-            solverKind: UInt8(truncatingIfNeeded: reactionSolverFlags >> 16),
-            flags: UInt8(truncatingIfNeeded: reactionSolverFlags >> 24),
             speciesRange: speciesRange.runtimeRange,
+            reactionNetworkIndex: UInt16(truncatingIfNeeded: reactionSolverFlags),
+            solverKind: MolecularSolverKind(rawValue: UInt8(truncatingIfNeeded: reactionSolverFlags >> 16)) ?? .deterministic,
+            flags: UInt8(truncatingIfNeeded: reactionSolverFlags >> 24),
             volumeFemtoliters: volumeTemperaturePropensityReserved.x,
             temperatureKelvin: volumeTemperaturePropensityReserved.y,
-            nextEventTick: UInt64(nextEventTickLo) | (UInt64(nextEventTickHi) << 32),
-            propensitySum: volumeTemperaturePropensityReserved.z
+            totalPropensity: volumeTemperaturePropensityReserved.z
         )
+    }
+}
+
+private extension MetalRange {
+    var runtimeRange: RuntimeRange {
+        RuntimeRange(lowerBound: lowerBound, count: count)
     }
 }
 #endif

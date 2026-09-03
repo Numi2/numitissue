@@ -109,6 +109,7 @@ let package = Package(
         .testTarget(
             name: "NumiTissueValidationTests",
             dependencies: [
+                "NumiTissue",
                 "NumiTissueCore",
                 "NumiTissueModels",
                 "NumiTissueRuntime",

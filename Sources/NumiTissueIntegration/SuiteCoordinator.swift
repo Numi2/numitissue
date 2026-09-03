@@ -16,6 +16,9 @@ public struct NumiSuiteStepResult: Sendable {
     public var tissueOutput: RuntimeOutputFrame
     public var motorOutput: NumiBrainMotorFrame
     public var physicsObservation: NumanXObservationFrame?
+    public var physiologyObservation: NumanXPhysiologyObservation?
+    public var physiologyControl: NumiBrainPhysiologyControl?
+    public var physiologyFeedback: TissuePhysiologyFeedback?
     public var issues: [SuiteValidationIssue]
     public var counters: RuntimeCounters
     public var errorDescription: String?
@@ -26,6 +29,9 @@ public struct NumiSuiteStepResult: Sendable {
         tissueOutput: RuntimeOutputFrame,
         motorOutput: NumiBrainMotorFrame,
         physicsObservation: NumanXObservationFrame? = nil,
+        physiologyObservation: NumanXPhysiologyObservation? = nil,
+        physiologyControl: NumiBrainPhysiologyControl? = nil,
+        physiologyFeedback: TissuePhysiologyFeedback? = nil,
         issues: [SuiteValidationIssue] = [],
         counters: RuntimeCounters = RuntimeCounters(),
         errorDescription: String? = nil
@@ -35,6 +41,9 @@ public struct NumiSuiteStepResult: Sendable {
         self.tissueOutput = tissueOutput
         self.motorOutput = motorOutput
         self.physicsObservation = physicsObservation
+        self.physiologyObservation = physiologyObservation
+        self.physiologyControl = physiologyControl
+        self.physiologyFeedback = physiologyFeedback
         self.issues = issues
         self.counters = counters
         self.errorDescription = errorDescription
@@ -71,6 +80,24 @@ public protocol SuiteTransactionJournal: Sendable {
     func recordPrepared(context: SuiteTransactionContext, tokens: [SuiteCommitToken]) async throws
     func recordCommitted(context: SuiteTransactionContext) async throws
     func recordAborted(context: SuiteTransactionContext, reason: String) async throws
+    func recordInDoubt(
+        context: SuiteTransactionContext,
+        tokens: [SuiteCommitToken],
+        reason: String
+    ) async throws
+}
+
+public extension SuiteTransactionJournal {
+    func recordInDoubt(
+        context: SuiteTransactionContext,
+        tokens: [SuiteCommitToken],
+        reason: String
+    ) async throws {
+        try await recordAborted(
+            context: context,
+            reason: "IN_DOUBT: \(reason); prepared=\(tokens.map(\.participant).joined(separator: ","))"
+        )
+    }
 }
 
 public actor InMemorySuiteTransactionJournal: SuiteTransactionJournal {
@@ -78,13 +105,35 @@ public actor InMemorySuiteTransactionJournal: SuiteTransactionJournal {
         case prepared(SuiteTransactionContext, [SuiteCommitToken])
         case committed(SuiteTransactionContext)
         case aborted(SuiteTransactionContext, String)
+        case inDoubt(SuiteTransactionContext, [SuiteCommitToken], String)
     }
 
     private(set) public var entries: [Entry] = []
+
     public init() {}
-    public func recordPrepared(context: SuiteTransactionContext, tokens: [SuiteCommitToken]) { entries.append(.prepared(context, tokens)) }
-    public func recordCommitted(context: SuiteTransactionContext) { entries.append(.committed(context)) }
-    public func recordAborted(context: SuiteTransactionContext, reason: String) { entries.append(.aborted(context, reason)) }
+
+    public func recordPrepared(
+        context: SuiteTransactionContext,
+        tokens: [SuiteCommitToken]
+    ) {
+        entries.append(.prepared(context, tokens))
+    }
+
+    public func recordCommitted(context: SuiteTransactionContext) {
+        entries.append(.committed(context))
+    }
+
+    public func recordAborted(context: SuiteTransactionContext, reason: String) {
+        entries.append(.aborted(context, reason))
+    }
+
+    public func recordInDoubt(
+        context: SuiteTransactionContext,
+        tokens: [SuiteCommitToken],
+        reason: String
+    ) {
+        entries.append(.inDoubt(context, tokens, reason))
+    }
 }
 
 public actor NumiSuiteCoordinator {
@@ -93,6 +142,7 @@ public actor NumiSuiteCoordinator {
     private let physics: any NumanXTransactionalEndpoint
     private let journal: any SuiteTransactionJournal
     private let planner: RuntimePhasePlanner
+    private let physiologyCoupler: NumiPhysiologyCoupler
 
     private var loaded = false
     private var time = TissueTime()
@@ -104,13 +154,15 @@ public actor NumiSuiteCoordinator {
         brain: any NumiBrainTransactionalEndpoint,
         physics: any NumanXTransactionalEndpoint,
         journal: any SuiteTransactionJournal = InMemorySuiteTransactionJournal(),
-        planner: RuntimePhasePlanner = RuntimePhasePlanner()
+        planner: RuntimePhasePlanner = RuntimePhasePlanner(),
+        physiologyCoupler: NumiPhysiologyCoupler = NumiPhysiologyCoupler()
     ) {
         self.tissue = tissue
         self.brain = brain
         self.physics = physics
         self.journal = journal
         self.planner = planner
+        self.physiologyCoupler = physiologyCoupler
     }
 
     public func load(model: CompiledTissueModel, state: TissueRuntimeState) async throws {
@@ -124,7 +176,12 @@ public actor NumiSuiteCoordinator {
     public func step(randomSeed: UInt64) async -> NumiSuiteStepResult {
         let transaction = TransactionID(rawValue: nextTransaction)
         nextTransaction &+= 1
-        let execution = planner.context(startTime: time, epoch: epoch, transaction: transaction, randomSeed: randomSeed)
+        let execution = planner.context(
+            startTime: time,
+            epoch: epoch,
+            transaction: transaction,
+            randomSeed: randomSeed
+        )
         let context = SuiteTransactionContext(
             transaction: transaction,
             epoch: epoch,
@@ -132,14 +189,22 @@ public actor NumiSuiteCoordinator {
             endTime: execution.endTime,
             randomSeed: randomSeed
         )
-        var tissueOutput = RuntimeOutputFrame(startTime: context.startTime, endTime: context.endTime)
+
+        var tissueOutput = RuntimeOutputFrame(
+            startTime: context.startTime,
+            endTime: context.endTime
+        )
         var motorOutput = NumiBrainMotorFrame()
         var observation: NumanXObservationFrame?
+        var physiologyObservation: NumanXPhysiologyObservation?
+        var physiologyControl: NumiBrainPhysiologyControl?
+        var physiologyFeedback: TissuePhysiologyFeedback?
         var issues: [SuiteValidationIssue] = []
         var counters = RuntimeCounters()
         var beganBrain = false
         var beganPhysics = false
         var beganTissue = false
+        var publicationStarted = false
         var preparedTokens: [SuiteCommitToken] = []
 
         guard loaded else {
@@ -148,46 +213,147 @@ public actor NumiSuiteCoordinator {
                 context: context,
                 tissueOutput: tissueOutput,
                 motorOutput: motorOutput,
-                issues: [SuiteValidationIssue(source: .coordinator, severity: .reject, code: 1, message: "Suite coordinator is not loaded")]
+                issues: [
+                    SuiteValidationIssue(
+                        source: .coordinator,
+                        severity: .reject,
+                        code: 1,
+                        message: "Suite coordinator is not loaded"
+                    )
+                ]
             )
         }
 
         do {
-            let committedObservation = try await physics.committedObservation(at: context.startTime)
+            var committedObservation = try await physics.committedObservation(
+                at: context.startTime
+            )
             guard committedObservation.time == context.startTime else {
-                throw SuiteCoordinatorError.timeMismatch(expected: context.startTime.tick, actual: committedObservation.time.tick)
+                throw SuiteCoordinatorError.timeMismatch(
+                    expected: context.startTime.tick,
+                    actual: committedObservation.time.tick
+                )
             }
-            let command = try await brain.committedTissueCommand(observation: committedObservation, context: context)
-            let runtimeInput = RuntimeInputFrame(command: command, observation: committedObservation)
 
-            try await brain.beginShadow(context: context, observation: committedObservation)
+            let physicsPhysiology = physics as? any NumanXPhysiologyEndpoint
+            if let physicsPhysiology {
+                let committedPhysiology = try await physicsPhysiology.committedPhysiology(
+                    at: context.startTime
+                )
+                physiologyObservation = try committedPhysiology.validated(
+                    expectedTime: context.startTime
+                )
+                if let physiologyObservation {
+                    committedObservation = try physiologyCoupler.augment(
+                        observation: committedObservation,
+                        physiology: physiologyObservation
+                    )
+                }
+            }
+
+            let command = try await brain.committedTissueCommand(
+                observation: committedObservation,
+                context: context
+            )
+            let runtimeInput = RuntimeInputFrame(
+                command: command,
+                observation: committedObservation
+            )
+
+            try await brain.beginShadow(
+                context: context,
+                observation: committedObservation
+            )
             beganBrain = true
+            if let brainPhysiology = brain as? any NumiBrainPhysiologyEndpoint,
+               let physiologyObservation {
+                try await brainPhysiology.integratePhysiologyObservation(
+                    physiologyObservation,
+                    context: context
+                )
+            }
+
             try await physics.beginShadow(context: context)
             beganPhysics = true
-            try await tissue.beginShadowStep(context: execution, input: runtimeInput)
+            try await tissue.beginShadowStep(
+                context: execution,
+                input: runtimeInput
+            )
             beganTissue = true
 
             for scheduled in planner.plan(startTick: context.startTime.tick) {
-                try await tissue.execute(phase: scheduled.phase, tickRange: scheduled.tickRange, context: execution)
+                try await tissue.execute(
+                    phase: scheduled.phase,
+                    tickRange: scheduled.tickRange,
+                    context: execution
+                )
             }
-            tissueOutput = try await tissue.collectOutput(context: execution)
-            motorOutput = try await brain.integrateTissue(tissueOutput, context: context)
 
-            let control = NumanXControlFrame(
-                timeRange: context.startTime..<context.endTime,
+            tissueOutput = try await tissue.collectOutput(context: execution)
+            let feedback = TissuePhysiologyFeedback(output: tissueOutput)
+            physiologyFeedback = feedback
+
+            motorOutput = try await brain.integrateTissue(
+                tissueOutput,
+                context: context
+            )
+            if let brainPhysiology = brain as? any NumiBrainPhysiologyEndpoint {
+                try await brainPhysiology.integrateTissuePhysiology(
+                    feedback,
+                    context: context
+                )
+                let generated = try await brainPhysiology.physiologyControl(
+                    context: context
+                )
+                physiologyControl = try generated.validated()
+                if let physiologyControl {
+                    motorOutput = try physiologyCoupler.merge(
+                        physiology: physiologyControl,
+                        into: motorOutput,
+                        at: context.endTime.tick
+                    )
+                }
+            }
+
+            let legacyPhysiology = physicsPhysiology == nil
+                ? physiologyControl
+                : nil
+            let control = try physiologyCoupler.controlFrame(
+                interval: context.startTime..<context.endTime,
                 motor: motorOutput,
-                metabolicDemand: tissueOutput.metabolicDemand
+                physiology: legacyPhysiology,
+                feedback: feedback
             )
             try await physics.integrate(control, context: context)
+
+            if let physicsPhysiology, let physiologyControl {
+                try await physicsPhysiology.integratePhysiologyControl(
+                    physiologyControl,
+                    feedback: feedback,
+                    context: context
+                )
+            }
+
             observation = try await physics.shadowObservation(context: context)
             if observation?.time != context.endTime {
-                issues.append(SuiteValidationIssue(
-                    source: .physics,
-                    severity: .reject,
-                    code: 2,
-                    value: Float(observation?.time.tick ?? 0),
-                    message: "NumanX shadow observation did not reach the transaction end time"
-                ))
+                issues.append(
+                    SuiteValidationIssue(
+                        source: .physics,
+                        severity: .reject,
+                        code: 2,
+                        value: Float(observation?.time.tick ?? 0),
+                        message: "NumanX shadow observation did not reach the transaction end time"
+                    )
+                )
+            }
+
+            if let physicsPhysiology {
+                let shadowPhysiology = try await physicsPhysiology.shadowPhysiology(
+                    context: context
+                )
+                physiologyObservation = try shadowPhysiology.validated(
+                    expectedTime: context.endTime
+                )
             }
 
             let tissueIssues = try await tissue.validateShadow(context: execution)
@@ -202,6 +368,21 @@ public actor NumiSuiteCoordinator {
             })
             issues.append(contentsOf: try await brain.validateShadow(context: context))
             issues.append(contentsOf: try await physics.validateShadow(context: context))
+
+            if let brainPhysiology = brain as? any NumiBrainPhysiologyEndpoint {
+                issues.append(
+                    contentsOf: try await brainPhysiology.validatePhysiologyShadow(
+                        context: context
+                    )
+                )
+            }
+            if let physicsPhysiology {
+                issues.append(
+                    contentsOf: try await physicsPhysiology.validatePhysiologyShadow(
+                        context: context
+                    )
+                )
+            }
             counters = await tissue.counters(context: execution)
 
             if issues.contains(where: { $0.severity == .reject }) {
@@ -211,43 +392,65 @@ public actor NumiSuiteCoordinator {
                     beganBrain: beganBrain,
                     beganPhysics: beganPhysics,
                     beganTissue: beganTissue,
+                    allowTissueRollback: true,
                     preparedTokens: preparedTokens
                 )
-                try? await journal.recordAborted(context: context, reason: issues.map(\.message).joined(separator: "; "))
+                try? await journal.recordAborted(
+                    context: context,
+                    reason: issues.map(\.message).joined(separator: "; ")
+                )
                 return NumiSuiteStepResult(
                     status: .rejected,
                     context: context,
                     tissueOutput: tissueOutput,
                     motorOutput: motorOutput,
                     physicsObservation: observation,
+                    physiologyObservation: physiologyObservation,
+                    physiologyControl: physiologyControl,
+                    physiologyFeedback: physiologyFeedback,
                     issues: issues,
                     counters: counters
                 )
             }
 
             if let preparedBrain = brain as? any PreparedNumiBrainEndpoint {
-                preparedTokens.append(try await preparedBrain.prepareCommit(context: context))
+                preparedTokens.append(
+                    try await preparedBrain.prepareCommit(context: context)
+                )
             }
             if let preparedPhysics = physics as? any PreparedNumanXEndpoint {
-                preparedTokens.append(try await preparedPhysics.prepareCommit(context: context))
+                preparedTokens.append(
+                    try await preparedPhysics.prepareCommit(context: context)
+                )
             }
-            try await journal.recordPrepared(context: context, tokens: preparedTokens)
+            try await journal.recordPrepared(
+                context: context,
+                tokens: preparedTokens
+            )
 
-            // Backend commit is a private-buffer authority swap after successful GPU completion.
-            // Prepared external participants are published only after every prepare has succeeded.
+            // Publication begins with the tissue private-buffer authority swap. Any error after
+            // this point is journaled as in-doubt rather than falsely reported as an abort.
+            publicationStarted = true
             try await tissue.commitShadow(context: execution)
+
             if let preparedBrain = brain as? any PreparedNumiBrainEndpoint,
-               let token = preparedTokens.first(where: { $0.participant == brain.name }) {
+               let token = preparedTokens.first(where: {
+                   $0.participant == brain.name
+               }) {
                 try await preparedBrain.commitPrepared(token, context: context)
             } else {
                 try await brain.commitShadow(context: context)
             }
+
             if let preparedPhysics = physics as? any PreparedNumanXEndpoint,
-               let token = preparedTokens.first(where: { $0.participant == physics.name }) {
+               let token = preparedTokens.first(where: {
+                   $0.participant == physics.name
+               }) {
                 try await preparedPhysics.commitPrepared(token, context: context)
             } else {
                 try await physics.commitShadow(context: context)
             }
+
             try await journal.recordCommitted(context: context)
             time = context.endTime
             epoch &+= 1
@@ -257,35 +460,57 @@ public actor NumiSuiteCoordinator {
                 tissueOutput: tissueOutput,
                 motorOutput: motorOutput,
                 physicsObservation: observation,
+                physiologyObservation: physiologyObservation,
+                physiologyControl: physiologyControl,
+                physiologyFeedback: physiologyFeedback,
                 issues: issues,
                 counters: counters
             )
         } catch {
-            let publicationMayHaveStarted = preparedTokens.count > 0 && beganTissue
+            let reason = String(describing: error)
             await rollbackAll(
                 context: context,
                 execution: execution,
                 beganBrain: beganBrain,
                 beganPhysics: beganPhysics,
                 beganTissue: beganTissue,
+                allowTissueRollback: !publicationStarted,
                 preparedTokens: preparedTokens
             )
-            try? await journal.recordAborted(context: context, reason: String(describing: error))
-            issues.append(SuiteValidationIssue(
-                source: .coordinator,
-                severity: .reject,
-                code: publicationMayHaveStarted ? 4 : 3,
-                message: String(describing: error)
-            ))
+
+            if publicationStarted {
+                try? await journal.recordInDoubt(
+                    context: context,
+                    tokens: preparedTokens,
+                    reason: reason
+                )
+            } else {
+                try? await journal.recordAborted(
+                    context: context,
+                    reason: reason
+                )
+            }
+
+            issues.append(
+                SuiteValidationIssue(
+                    source: .coordinator,
+                    severity: .reject,
+                    code: publicationStarted ? 4 : 3,
+                    message: reason
+                )
+            )
             return NumiSuiteStepResult(
-                status: publicationMayHaveStarted ? .inDoubt : .failed,
+                status: publicationStarted ? .inDoubt : .failed,
                 context: context,
                 tissueOutput: tissueOutput,
                 motorOutput: motorOutput,
                 physicsObservation: observation,
+                physiologyObservation: physiologyObservation,
+                physiologyControl: physiologyControl,
+                physiologyFeedback: physiologyFeedback,
                 issues: issues,
                 counters: counters,
-                errorDescription: String(describing: error)
+                errorDescription: reason
             )
         }
     }
@@ -303,19 +528,30 @@ public actor NumiSuiteCoordinator {
         beganBrain: Bool,
         beganPhysics: Bool,
         beganTissue: Bool,
+        allowTissueRollback: Bool,
         preparedTokens: [SuiteCommitToken]
     ) async {
         if let preparedBrain = brain as? any PreparedNumiBrainEndpoint,
-           let token = preparedTokens.first(where: { $0.participant == brain.name }) {
+           let token = preparedTokens.first(where: {
+               $0.participant == brain.name
+           }) {
             await preparedBrain.rollbackPrepared(token, context: context)
-        } else if beganBrain { await brain.rollbackShadow(context: context) }
+        } else if beganBrain {
+            await brain.rollbackShadow(context: context)
+        }
 
         if let preparedPhysics = physics as? any PreparedNumanXEndpoint,
-           let token = preparedTokens.first(where: { $0.participant == physics.name }) {
+           let token = preparedTokens.first(where: {
+               $0.participant == physics.name
+           }) {
             await preparedPhysics.rollbackPrepared(token, context: context)
-        } else if beganPhysics { await physics.rollbackShadow(context: context) }
+        } else if beganPhysics {
+            await physics.rollbackShadow(context: context)
+        }
 
-        if beganTissue { await tissue.rollbackShadow(context: execution) }
+        if beganTissue && allowTissueRollback {
+            await tissue.rollbackShadow(context: execution)
+        }
     }
 }
 
@@ -326,9 +562,12 @@ public enum SuiteCoordinatorError: Error, Sendable, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case .alreadyLoaded: return "NumiSuiteCoordinator is already loaded"
-        case .timeMismatch(let expected, let actual): return "Committed participant time mismatch: expected \(expected), received \(actual)"
-        case .participantCommitFailed(let participant): return "Prepared participant \(participant) failed during commit"
+        case .alreadyLoaded:
+            return "NumiSuiteCoordinator is already loaded"
+        case .timeMismatch(let expected, let actual):
+            return "Committed participant time mismatch: expected \(expected), received \(actual)"
+        case .participantCommitFailed(let participant):
+            return "Prepared participant \(participant) failed during commit"
         }
     }
 }

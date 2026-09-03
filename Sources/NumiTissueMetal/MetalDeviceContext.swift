@@ -68,6 +68,7 @@ public struct MetalDeviceCapabilities: Sendable, Hashable, Codable {
     public var supportsDynamicLibraries: Bool
     public var supportsRaytracing: Bool
     public var supportsFunctionPointers: Bool
+    public var counterSetNames: [String]
 
     public init(device: MTLDevice) {
         name = device.name
@@ -86,6 +87,7 @@ public struct MetalDeviceCapabilities: Sendable, Hashable, Codable {
         supportsDynamicLibraries = device.supportsDynamicLibraries
         supportsRaytracing = device.supportsRaytracing
         supportsFunctionPointers = device.supportsFunctionPointers
+        counterSetNames = (device.counterSets ?? []).map(\.name).sorted()
     }
 }
 
@@ -149,6 +151,7 @@ public final class MetalDeviceContext: @unchecked Sendable {
     public let capabilities: MetalDeviceCapabilities
     public let options: MetalExecutionOptions
     public let privateHeap: MTLHeap
+    public let telemetry: MetalTelemetryRecorder
 
     private let lock = NSLock()
     private var sequence: UInt64 = 0
@@ -178,6 +181,7 @@ public final class MetalDeviceContext: @unchecked Sendable {
         self.capabilities = MetalDeviceCapabilities(device: device)
         self.options = options
         self.privateHeap = privateHeap
+        self.telemetry = MetalTelemetryRecorder()
         self.privateHeap.label = "NumiTissue.Private"
         self.commandQueue.label = "NumiTissue.Compute"
         self.transferQueue.label = "NumiTissue.Transfer"
@@ -198,6 +202,7 @@ public final class MetalDeviceContext: @unchecked Sendable {
             throw MetalRuntimeError.bufferAllocationFailed(label: label, bytes: padded)
         }
         buffer.label = label
+        telemetry.recordPrivateAllocation(bytes: padded)
         return buffer
     }
 
@@ -209,24 +214,28 @@ public final class MetalDeviceContext: @unchecked Sendable {
             throw MetalRuntimeError.bufferAllocationFailed(label: label, bytes: length)
         }
         buffer.label = label
+        telemetry.recordSharedAllocation(bytes: length)
         return buffer
     }
 
     public func makeCommandBuffer(label: String) throws -> MTLCommandBuffer {
         guard let buffer = commandQueue.makeCommandBuffer() else { throw MetalRuntimeError.commandBufferCreationFailed }
         buffer.label = "\(label)#\(nextSequence())"
+        telemetry.recordComputeCommandBuffer()
         return buffer
     }
 
     public func makeTransferCommandBuffer(label: String) throws -> MTLCommandBuffer {
         guard let buffer = transferQueue.makeCommandBuffer() else { throw MetalRuntimeError.commandBufferCreationFailed }
         buffer.label = "\(label)#\(nextSequence())"
+        telemetry.recordTransferCommandBuffer()
         return buffer
     }
 
     public func awaitCompletion(_ commandBuffer: MTLCommandBuffer) async throws {
         try await withCheckedThrowingContinuation { continuation in
-            commandBuffer.addCompletedHandler { completed in
+            commandBuffer.addCompletedHandler { [telemetry] completed in
+                telemetry.recordCompletion(completed)
                 if completed.status == .completed {
                     continuation.resume()
                 } else {
@@ -241,7 +250,8 @@ public final class MetalDeviceContext: @unchecked Sendable {
     public func awaitCompletion(_ handle: MetalCommandBufferHandle) async throws {
         let commandBuffer = handle.commandBuffer
         try await withCheckedThrowingContinuation { continuation in
-            commandBuffer.addCompletedHandler { completed in
+            commandBuffer.addCompletedHandler { [telemetry] completed in
+                telemetry.recordCompletion(completed)
                 if completed.status == .completed {
                     continuation.resume()
                 } else {

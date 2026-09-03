@@ -43,8 +43,10 @@ final class CheckpointPreflightValidationTests: XCTestCase {
             model: ValidationFixtures.emptyModel(),
             state: ValidationFixtures.passiveState()
         )
-        XCTAssertEqual((await session.time()).tick, 0)
-        XCTAssertEqual(await session.epoch(), 0)
+        let loadedTime = await session.time()
+        let loadedEpoch = await session.epoch()
+        XCTAssertEqual(loadedTime.tick, 0)
+        XCTAssertEqual(loadedEpoch, 0)
     }
 
     func testWrongEventWheelTickIsRejectedBeforeLoad() async throws {
@@ -88,7 +90,8 @@ final class CheckpointPreflightValidationTests: XCTestCase {
             model: ValidationFixtures.emptyModel(),
             state: ValidationFixtures.passiveState()
         )
-        XCTAssertEqual((await session.time()).tick, 0)
+        let loadedTime = await session.time()
+        XCTAssertEqual(loadedTime.tick, 0)
     }
 
     func testParticipantMutationInvalidatesAuxiliaryDigest() throws {

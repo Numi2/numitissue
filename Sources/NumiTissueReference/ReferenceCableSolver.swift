@@ -2,7 +2,7 @@ import Foundation
 import NumiTissueCore
 import NumiTissueModels
 
-extension ReferenceTissueRuntime {
+extension CPUReferenceTissueBackend {
     func assembleAndSolveNeuron(
         _ neuron: GPUCompiledNeuron,
         dtMilliseconds: Float,

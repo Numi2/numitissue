@@ -269,7 +269,7 @@ public extension MetalStateArena {
             length: transient.localEvents.length,
             options: .storageModeShared
         ) else {
-            throw MetalRuntimeError.allocationFailed
+            throw MetalRuntimeError.bufferAllocationFailed(label: "NT.Migration.EventBuffers", bytes: transient.eventBucketCounts.length + transient.localEvents.length)
         }
         counts.label = "NT.Migration.EventCounts.Readback"
         events.label = "NT.Migration.Events.Readback"
@@ -278,7 +278,7 @@ public extension MetalStateArena {
             label: "NT.Migration.ExportEventWheel"
         )
         guard let blit = commandBuffer.makeBlitCommandEncoder() else {
-            throw MetalRuntimeError.commandEncodingFailed
+            throw MetalRuntimeError.encoderCreationFailed("NT.Migration.EventWheel")
         }
         blit.copy(
             from: transient.eventBucketCounts,
@@ -296,7 +296,7 @@ public extension MetalStateArena {
         )
         blit.endEncoding()
         commandBuffer.commit()
-        try await context.waitForCompletion(commandBuffer)
+        try await context.awaitCompletion(commandBuffer)
 
         let countPointer = counts.contents().bindMemory(
             to: UInt32.self,
@@ -381,7 +381,7 @@ public extension MetalStateArena {
             length: transient.localEvents.length,
             options: .storageModeShared
         ) else {
-            throw MetalRuntimeError.allocationFailed
+            throw MetalRuntimeError.bufferAllocationFailed(label: "NT.Migration.EventBuffers", bytes: transient.eventBucketCounts.length + transient.localEvents.length)
         }
         counts.label = "NT.Migration.EventCounts.Upload"
         events.label = "NT.Migration.Events.Upload"
@@ -420,7 +420,7 @@ public extension MetalStateArena {
             label: "NT.Migration.ImportEventWheel"
         )
         guard let blit = commandBuffer.makeBlitCommandEncoder() else {
-            throw MetalRuntimeError.commandEncodingFailed
+            throw MetalRuntimeError.encoderCreationFailed("NT.Migration.EventWheel")
         }
         blit.copy(
             from: counts,
@@ -438,7 +438,7 @@ public extension MetalStateArena {
         )
         blit.endEncoding()
         commandBuffer.commit()
-        try await context.waitForCompletion(commandBuffer)
+        try await context.awaitCompletion(commandBuffer)
     }
 }
 

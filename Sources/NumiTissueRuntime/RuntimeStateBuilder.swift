@@ -458,10 +458,10 @@ public struct TissueRuntimeStateBuilder: Sendable {
             segments: scaled(state.segments.count, capacityScale),
             compartments: scaled(state.compartments.count, capacityScale),
             synapses: scaled(state.synapses.count, capacityScale),
-            fields: scaled(state.fields.count, capacityScale),
+            events: max(65_536, scaled(state.synapses.count * 2, capacityScale)),
+            fieldValues: scaled(state.fields.count, capacityScale),
             microdomains: scaled(state.microdomains.count, capacityScale),
-            molecularSpecies: scaled(state.molecularSpecies.count, capacityScale),
-            events: max(65_536, scaled(state.synapses.count * 2, capacityScale))
+            molecularSpecies: scaled(state.molecularSpecies.count, capacityScale)
         )
         try state.validateCapacity()
         return state

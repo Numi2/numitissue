@@ -78,6 +78,16 @@ public struct SBMLSpeciesReference: Sendable, Hashable, Codable {
     }
 }
 
+public struct MathPiecewiseCase: Sendable, Hashable, Codable {
+    public var value: MathExpression
+    public var condition: MathExpression
+
+    public init(value: MathExpression, condition: MathExpression) {
+        self.value = value
+        self.condition = condition
+    }
+}
+
 public indirect enum MathExpression: Sendable, Hashable, Codable {
     case number(Double)
     case symbol(String)
@@ -95,7 +105,7 @@ public indirect enum MathExpression: Sendable, Hashable, Codable {
     case ceiling(MathExpression)
     case minimum([MathExpression])
     case maximum([MathExpression])
-    case piecewise([(value: MathExpression, condition: MathExpression)], otherwise: MathExpression?)
+    case piecewise([MathPiecewiseCase], otherwise: MathExpression?)
     case less(MathExpression, MathExpression)
     case lessOrEqual(MathExpression, MathExpression)
     case greater(MathExpression, MathExpression)

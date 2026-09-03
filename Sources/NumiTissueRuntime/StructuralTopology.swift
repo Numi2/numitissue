@@ -252,14 +252,14 @@ public struct StructuralTopologyEngine: Sendable {
                     cellIndex: source.cellIndex,
                     parentSegmentIndex: UInt32(sourceIndex),
                     compartmentIndex: UInt32.max,
-                    kind: .growthCone,
+                    type: SegmentKind.growthCone.rawValue,
+                    flags: 1,
                     start: start,
                     end: end,
                     radiusMicrometers: max(source.radiusMicrometers * 0.8, 0.05),
                     myelinFraction: 0,
                     growthRateMicrometersPerSecond: max(source.growthRateMicrometersPerSecond, 0),
                     structuralScore: 0.5,
-                    flags: 1
                 )
                 pendingSegments.append(PendingSegment(segment: segment, parentOldIndex: sourceIndex))
                 applied += 1
@@ -648,8 +648,8 @@ public struct StructuralTopologyEngine: Sendable {
                 postTrace: 0,
                 eligibility: 0,
                 consolidation: 0,
-                lastEventTick: 0,
-                structuralScore: 0.5
+                structuralScore: 0.5,
+                lastEventTick: 0
             )
             synapseEntries.append(SynapseEntry(value: synapse, oldIndex: nil))
             createdSynapses += 1
@@ -762,7 +762,7 @@ public struct StructuralTopologyEngine: Sendable {
     }
 
     private func rebuildTileRanges(
-        tiles: inout [RuntimeTileState],
+        tiles: inout [TileRuntimeState],
         cells: [RuntimeCellState],
         segments: [RuntimeSegmentState],
         compartments: [RuntimeCompartmentState],

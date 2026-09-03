@@ -334,7 +334,7 @@ public struct NTRouteTable: Codable, Sendable {
 }
 
 /// Tile-local queues plus 26 deterministic neighbor queues. Long-range events remain in the route wheel.
-public struct NTTileEventQueues: Codable, Sendable {
+public struct NTTileEventQueues: Codable, Hashable, Sendable {
     public var local: [NTNeuralEvent]
     public var edges: [[NTNeuralEvent]]
     public var capacityPerQueue: Int

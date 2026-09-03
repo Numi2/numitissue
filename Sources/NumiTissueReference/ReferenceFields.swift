@@ -2,7 +2,7 @@ import Foundation
 import NumiTissueCore
 import NumiTissueModels
 
-extension ReferenceTissueRuntime {
+extension CPUReferenceTissueBackend {
     func runFieldAndMolecularBlock(
         transactionIndex: UInt64,
         blockIndex: UInt32,
@@ -39,6 +39,123 @@ extension ReferenceTissueRuntime {
                 accumulator: &accumulator
             )
         }
+    }
+
+    /// Executes the bounded reaction layout used by the legacy reference working state. The
+    /// reaction table is shared with the Metal representation: reactant/product indices are local
+    /// to a domain, and kinetics.x/y are forward/reverse mass-action rates. Keeping this fallback
+    /// here prevents an incomplete helper path from silently skipping molecular state updates.
+    func updateMolecularDomains(
+        transactionIndex: UInt64,
+        blockIndex: UInt32,
+        dtSeconds: Float,
+        model: CompiledTissueModel,
+        state: inout ReferenceWorkingState,
+        accumulator: inout ReferenceStepAccumulator
+    ) {
+        _ = transactionIndex
+        _ = blockIndex
+        guard dtSeconds.isFinite, dtSeconds > 0 else { return }
+        for domainIndex in state.microdomains.indices {
+            var header = state.microdomains[domainIndex]
+            let speciesCount = Int(header.countsAndOffsets0.x)
+            let reactionCount = Int(header.countsAndOffsets0.y)
+            let speciesOffset = Int(header.countsAndOffsets0.z)
+            let reactionOffset = Int(header.countsAndOffsets0.w)
+            let voxelCount = max(Int(header.countsAndOffsets1.x), 1)
+            guard speciesCount > 0,
+                  reactionCount >= 0,
+                  speciesOffset >= 0,
+                  reactionOffset >= 0,
+                  speciesOffset + speciesCount * voxelCount <= state.molecularSpecies.count,
+                  reactionOffset + reactionCount <= model.molecularReactions.count else { continue }
+
+            var totalPropensity: Float = 0
+            for voxel in 0..<voxelCount {
+                let base = speciesOffset + voxel * speciesCount
+                var delta = [Float](repeating: 0, count: speciesCount)
+                for reactionIndex in 0..<reactionCount {
+                    let reaction = model.molecularReactions[reactionOffset + reactionIndex]
+                    let reactantIndices = [reaction.reactants.x, reaction.reactants.y, reaction.reactants.z, reaction.reactants.w]
+                    let productIndices = [reaction.products.x, reaction.products.y, reaction.products.z, reaction.products.w]
+                    let reactantStoichiometry = [reaction.stoichiometry.x, reaction.stoichiometry.y]
+                    let productStoichiometry = [reaction.stoichiometry.z, reaction.stoichiometry.w]
+                    var forward = max(reaction.kinetics.x, 0)
+                    var reverse = max(reaction.kinetics.y, 0)
+                    for participant in 0..<2 {
+                        let index = Int(reactantIndices[participant])
+                        let order = max(reactantStoichiometry[participant], 0)
+                        if index == Int(UInt32.max) || index >= speciesCount || order == 0 { continue }
+                        forward *= Float(Foundation.pow(Swift.max(Double(state.molecularSpecies[base + index].values.x), 0.0), Double(order)))
+                    }
+                    for participant in 0..<2 {
+                        let index = Int(productIndices[participant])
+                        let order = max(productStoichiometry[participant], 0)
+                        if index == Int(UInt32.max) || index >= speciesCount || order == 0 { continue }
+                        reverse *= Float(Foundation.pow(Swift.max(Double(state.molecularSpecies[base + index].values.x), 0.0), Double(order)))
+                    }
+                    let net = Float(forward - reverse)
+                    guard net.isFinite else { continue }
+                    totalPropensity += abs(net)
+                    for participant in 0..<2 {
+                        let index = Int(reactantIndices[participant])
+                        let coefficient = max(reactantStoichiometry[participant], 0)
+                        if index >= 0, index < speciesCount, index != Int(UInt32.max) {
+                            delta[index] -= net * coefficient * dtSeconds
+                        }
+                    }
+                    for participant in 0..<2 {
+                        let index = Int(productIndices[participant])
+                        let coefficient = max(productStoichiometry[participant], 0)
+                        if index >= 0, index < speciesCount, index != Int(UInt32.max) {
+                            delta[index] += net * coefficient * dtSeconds
+                        }
+                    }
+                }
+                for index in 0..<speciesCount {
+                    let current = state.molecularSpecies[base + index].values.x
+                    let updated = current + delta[index]
+                    state.molecularSpecies[base + index].values.x = updated.isFinite ? max(updated, 0) : current
+                }
+            }
+            header.timeAndError.x += dtSeconds
+            header.timeAndError.y = dtSeconds
+            header.timeAndError.w = totalPropensity
+            state.microdomains[domainIndex] = header
+            accumulator.metrics.molecularReactions &+= UInt64(reactionCount)
+        }
+    }
+
+    /// Updates ATP/stress from the local oxygen/glucose field while retaining the explicit input
+    /// boundary as the fallback for cells without a valid field voxel.
+    func updateMetabolismAndGlia(
+        dtMilliseconds: Float,
+        input: TissueInput,
+        model: CompiledTissueModel,
+        topology: ReferenceStaticTopology,
+        state: inout ReferenceWorkingState,
+        accumulator: inout ReferenceStepAccumulator
+    ) {
+        _ = model
+        _ = topology
+        let dtSeconds = max(dtMilliseconds, 0) / 1_000
+        for index in state.cells.indices {
+            var cell = state.cells[index]
+            let tileIndexValue = state.cellToTile.indices.contains(index) ? state.cellToTile[index] : UInt32.max
+            let tileIndex = safeIndex(tileIndexValue, count: state.tileHeaders.count)
+            let fieldIndex = tileIndex.map { Int(state.tileHeaders[$0].offsets1.x) }
+            let oxygen = fieldIndex.flatMap { $0 < state.fields.count ? state.fields[$0][.oxygen] : nil } ?? input.metabolicBoundary.oxygen
+            let glucose = fieldIndex.flatMap { $0 < state.fields.count ? state.fields[$0][.glucose] : nil } ?? input.metabolicBoundary.glucose
+            let oxygenStress = min(max(input.metabolicBoundary.oxygen - oxygen, 0), 1)
+            let glucoseStress = min(max(input.metabolicBoundary.glucose - glucose, 0), 1)
+            let demand = max(cell.metabolism.x, 0)
+            cell.metabolism.y = oxygenStress
+            cell.metabolism.z = glucoseStress
+            cell.metabolism.x = max(0, demand + dtSeconds * (min(oxygen, glucose) - demand))
+            cell.metabolism.w = min(max(cell.metabolism.w + dtSeconds * (oxygenStress + glucoseStress), 0), 1)
+            state.cells[index] = cell
+        }
+        _ = accumulator
     }
 
     func updateExtracellularFields(

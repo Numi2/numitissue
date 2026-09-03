@@ -239,7 +239,7 @@ public struct NTCellPool: Codable, Sendable {
     }
 
     public func validate() -> [NTDiagnostic] {
-        let scalarCounts = [
+        let scalarCounts: [Int] = [
             lineages.count, tileIDs.count, kinds.count, phases.count, fidelities.count,
             positions.count, velocities.count, radii.count, orientations.count, ages.count,
             cycleProgress.count, differentiationProgress.count, energy.count,

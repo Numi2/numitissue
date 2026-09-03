@@ -120,6 +120,17 @@ public enum MetalRuntimeError: Error, Sendable, CustomStringConvertible {
     }
 }
 
+/// Sendable hand-off for a command buffer that is created and encoded inside one actor, then
+/// awaited by the device context. The Metal object itself remains encapsulated in this checked
+/// ownership boundary; no raw command buffer crosses a Swift concurrency isolation boundary.
+public final class MetalCommandBufferHandle: @unchecked Sendable {
+    fileprivate let commandBuffer: MTLCommandBuffer
+
+    public init(_ commandBuffer: MTLCommandBuffer) {
+        self.commandBuffer = commandBuffer
+    }
+}
+
 /// All mutable simulation buffers remain GPU resident. Shared buffers are restricted to command
 /// metadata, compact output, validation flags, counters, and explicit snapshot transfer.
 public final class MetalDeviceContext: @unchecked Sendable {
@@ -184,7 +195,7 @@ public final class MetalDeviceContext: @unchecked Sendable {
     public func makeSharedBuffer(length: Int, label: String, writeCombined: Bool = false) throws -> MTLBuffer {
         guard length > 0 else { throw MetalRuntimeError.bufferAllocationFailed(label: label, bytes: length) }
         var options: MTLResourceOptions = [.storageModeShared]
-        options.insert(writeCombined ? .cpuCacheModeWriteCombined : .cpuCacheModeDefaultCache)
+        if writeCombined { options.insert(.cpuCacheModeWriteCombined) }
         guard let buffer = device.makeBuffer(length: length, options: options) else {
             throw MetalRuntimeError.bufferAllocationFailed(label: label, bytes: length)
         }
@@ -205,6 +216,21 @@ public final class MetalDeviceContext: @unchecked Sendable {
     }
 
     public func awaitCompletion(_ commandBuffer: MTLCommandBuffer) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            commandBuffer.addCompletedHandler { completed in
+                if completed.status == .completed {
+                    continuation.resume()
+                } else {
+                    let reason = completed.error.map(String.init(describing:)) ?? "status=\(completed.status.rawValue)"
+                    continuation.resume(throwing: MetalRuntimeError.commandBufferFailed(reason))
+                }
+            }
+            commandBuffer.commit()
+        }
+    }
+
+    public func awaitCompletion(_ handle: MetalCommandBufferHandle) async throws {
+        let commandBuffer = handle.commandBuffer
         try await withCheckedThrowingContinuation { continuation in
             commandBuffer.addCompletedHandler { completed in
                 if completed.status == .completed {

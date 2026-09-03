@@ -91,7 +91,7 @@ public struct NTMetalWorldConstants: Sendable {
         seed = SIMD4(
             UInt32(truncatingIfNeeded: configuration.seed),
             UInt32(truncatingIfNeeded: configuration.seed >> 32),
-            UInt32(bitPattern: configuration.originMicrometers.z.bitPattern),
+            configuration.originMicrometers.z.bitPattern,
             0
         )
     }

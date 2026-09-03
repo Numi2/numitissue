@@ -730,10 +730,12 @@ public struct NTTopologyCompiler: Sendable {
     }
 
     private func rebuildTileNeighbors(state: inout NTProductionState) {
-        let offsets: [(Int32, Int32, Int32)] = (-1...1).flatMap { z in
-            (-1...1).flatMap { y in
-                (-1...1).compactMap { x in
-                    (x == 0 && y == 0 && z == 0) ? nil : (Int32(x), Int32(y), Int32(z))
+        var offsets: [(Int32, Int32, Int32)] = []
+        offsets.reserveCapacity(26)
+        for z in -1...1 {
+            for y in -1...1 {
+                for x in -1...1 where x != 0 || y != 0 || z != 0 {
+                    offsets.append((Int32(x), Int32(y), Int32(z)))
                 }
             }
         }

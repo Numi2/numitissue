@@ -4,7 +4,7 @@ import NumiTissueCore
 /// Optional capability for backends that can reconstruct live topology and migrate storage when
 /// fidelity changes. Decisions are staged before a transaction and are applied atomically with its
 /// normal state commit. Backends may also derive decisions internally from device-side policies.
-public protocol AdaptiveFidelityExecutionBackend: TissueExecutionBackend {
+public protocol AdaptiveFidelityExecutionBackend: NumiTissueExecutionBackend {
     func stageFidelityDecisions(
         _ decisions: [FidelityDecision],
         context: ExecutionContext

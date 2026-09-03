@@ -2,7 +2,7 @@ import Foundation
 import NumiTissueCore
 import NumiTissueModels
 
-public enum TissueSelection: Sendable, Hashable, Codable {
+public indirect enum TissueSelection: Sendable, Hashable, Codable {
     case all
     case tiles([TileCoordinate])
     case cells([CellID])
@@ -35,6 +35,11 @@ public enum TissueSelection: Sendable, Hashable, Codable {
     }
 }
 
+public enum TissueMutationPersistence: String, Sendable, Hashable, Codable {
+    case transaction
+    case persistent
+}
+
 public enum TissueMutationOperation: String, Sendable, Hashable, Codable {
     case set
     case add
@@ -47,13 +52,15 @@ public struct RuntimeParameterMutation: Sendable, Hashable, Codable {
     public var path: String
     public var selector: TissueSelection
     public var operation: TissueMutationOperation
+    public var persistence: TissueMutationPersistence
     public var value: Float
     public var source: String
 
-    public init(path: String, selector: TissueSelection = .all, operation: TissueMutationOperation, value: Float, source: String = "user") {
+    public init(path: String, selector: TissueSelection = .all, operation: TissueMutationOperation, value: Float, persistence: TissueMutationPersistence = .transaction, source: String = "user") {
         self.path = path
         self.selector = selector
         self.operation = operation
+        self.persistence = persistence
         self.value = value
         self.source = source
     }
@@ -191,7 +198,12 @@ public enum TissueStateInterventionApplier {
         case "cell.metabolic_stress":
             for index in selectedCells { state.cells[index].metabolicStress = max(operate(state.cells[index].metabolicStress, mutation), 0) }
         case "cell.fidelity":
-            guard mutation.operation == .set, let level = FidelityLevel(rawValue: Int(mutation.value.rounded())) else { throw TissueInterventionError.invalidFidelity }
+            let rawLevel = mutation.value.rounded()
+            guard mutation.operation == .set,
+                  rawLevel == mutation.value,
+                  rawLevel >= Float(FidelityLevel.fieldOnly.rawValue),
+                  rawLevel <= Float(FidelityLevel.molecularDetail.rawValue),
+                  let level = FidelityLevel(rawValue: UInt8(rawLevel)) else { throw TissueInterventionError.invalidFidelity }
             for index in selectedCells { state.cells[index].fidelity = level }
         case "synapse.weight":
             for index in state.synapses.indices {

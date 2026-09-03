@@ -2,7 +2,7 @@ import Foundation
 
 /// Optional capability for execution backends that commit development and glial topology changes
 /// as part of the same biological transaction as the state update that generated them.
-public protocol StructuralTopologyExecutionBackend: TissueExecutionBackend {
+public protocol StructuralTopologyExecutionBackend: NumiTissueExecutionBackend {
     func lastStructuralTopologyPlan() async -> StructuralTopologyPlan?
 }
 

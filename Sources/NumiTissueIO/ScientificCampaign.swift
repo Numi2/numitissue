@@ -269,13 +269,14 @@ public enum ScientificCampaignSharder {
             data: Data("\(campaignID.uuidString):\(index)".utf8)
         ).hexadecimal
         let text = String(digest.prefix(32))
-        let formatted = [
-            String(text.prefix(8)),
-            String(text.dropFirst(8).prefix(4)),
-            String(text.dropFirst(12).prefix(4)),
-            String(text.dropFirst(16).prefix(4)),
-            String(text.dropFirst(20).prefix(12))
-        ].joined(separator: "-")
+        var components: [String] = []
+        components.reserveCapacity(5)
+        components.append(String(text.prefix(8)))
+        components.append(String(text.dropFirst(8).prefix(4)))
+        components.append(String(text.dropFirst(12).prefix(4)))
+        components.append(String(text.dropFirst(16).prefix(4)))
+        components.append(String(text.dropFirst(20).prefix(12)))
+        let formatted = components.joined(separator: "-")
         return UUID(uuidString: formatted) ?? UUID()
     }
 }

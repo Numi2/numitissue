@@ -189,11 +189,13 @@ final class TransactionValidationTests: XCTestCase {
         )
 
         XCTAssertEqual(report.status, .rejected)
-        XCTAssertTrue(report.issues.contains {
-            $0.severity == .reject &&
-            ($0.code == NumiTissueRuntime.ValidationCode.voltageBounds ||
-             $0.code == NumiTissueRuntime.ValidationCode.nonFinite)
+        let hasVoltageOrFiniteReject = report.issues.contains(where: { (issue: RuntimeValidationIssue) in
+            let rejected = issue.severity == RuntimeValidationIssue.Severity.reject
+            let expectedCode = issue.code == ValidationCode.voltageBounds ||
+                issue.code == ValidationCode.nonFinite
+            return rejected && expectedCode
         })
+        XCTAssertTrue(hasVoltageOrFiniteReject)
         let committed = try await session.exportState()
         XCTAssertEqual(
             try TissueStateDigest.compute(committed),
@@ -201,8 +203,10 @@ final class TransactionValidationTests: XCTestCase {
         )
         let wheel = try await backend.exportEventWheelSnapshot()
         XCTAssertEqual(wheel.events.count, 0)
-        XCTAssertEqual((await session.time()).tick, 0)
-        XCTAssertEqual(await session.epoch(), 0)
+        let rolledBackTime = await session.time()
+        let rolledBackEpoch = await session.epoch()
+        XCTAssertEqual(rolledBackTime.tick, 0)
+        XCTAssertEqual(rolledBackEpoch, 0)
     }
 
     func testCheckpointRoundTripRestoresPendingEventAndParticipantState() async throws {
@@ -277,8 +281,10 @@ final class TransactionValidationTests: XCTestCase {
             checkpoint: restoredCheckpoint,
             expectedModelDigest: ValidationFixtures.modelDigest
         )
-        XCTAssertEqual((await restoredSession.time()).tick, 200)
-        XCTAssertEqual(await restoredSession.epoch(), 1)
+        let restoredTime = await restoredSession.time()
+        let restoredEpoch = await restoredSession.epoch()
+        XCTAssertEqual(restoredTime.tick, 200)
+        XCTAssertEqual(restoredEpoch, 1)
 
         let second = await restoredSession.step(randomSeed: 12)
         XCTAssertEqual(second.status, .committed)

@@ -272,33 +272,6 @@ public struct TransactionContext: Sendable {
     }
 }
 
-@frozen
-public struct MultiRateClock: Sendable {
-    public private(set) var time: TissueTime
-    public private(set) var transactionIndex: UInt64
-    public let schedule: SchedulerConfiguration
-
-    public init(schedule: SchedulerConfiguration, start: TissueTime = .init()) {
-        self.schedule = schedule
-        self.time = start
-        self.transactionIndex = 0
-    }
-
-    public mutating func advanceCommittedTransaction() {
-        let ticks = UInt64(schedule.transactionMicroseconds) / TissueTime.quantumMicroseconds
-        time = time + ticks
-        transactionIndex &+= 1
-    }
-
-    public func isDue(periodMicroseconds: UInt64) -> Bool {
-        time.microseconds.isMultiple(of: periodMicroseconds)
-    }
-
-    public var cellMechanicsDue: Bool { isDue(periodMicroseconds: UInt64(schedule.cellMechanicsMicroseconds)) }
-    public var regulatoryDue: Bool { isDue(periodMicroseconds: UInt64(schedule.regulatoryMicroseconds)) }
-    public var structuralDue: Bool { isDue(periodMicroseconds: UInt64(schedule.structuralMicroseconds)) }
-}
-
 public struct TransactionSequencer: Sendable {
     private var nextValue: UInt64
 

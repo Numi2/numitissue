@@ -131,7 +131,8 @@ public actor NumiTissueSession {
 
     public func step(
         input: RuntimeInputFrame = RuntimeInputFrame(),
-        randomSeed: UInt64
+        randomSeed: UInt64,
+        intervention: TissueInterventionFrame? = nil
     ) async -> NumiTissueStepReport {
         let transaction = TransactionID(rawValue: nextTransaction)
         nextTransaction &+= 1
@@ -150,9 +151,26 @@ public actor NumiTissueSession {
         }
         var began = false
         do {
+            var effectiveInput = input
+            if let intervention {
+                guard intervention.tick == context.startTime.tick else {
+                    throw RuntimeOverlayError.staleFrame(
+                        expected: context.startTime.tick,
+                        received: intervention.tick
+                    )
+                }
+                effectiveInput.stimuli.append(contentsOf: intervention.stimuli)
+                if let interventionAware = backend as?
+                        any InterventionAwareTissueBackend {
+                    try await interventionAware.stageInterventions(
+                        intervention,
+                        context: context
+                    )
+                }
+            }
             try await backend.beginShadowStep(
                 context: context,
-                input: input
+                input: effectiveInput
             )
             began = true
             for scheduled in phasePlanner.plan(startTick: currentTime.tick) {

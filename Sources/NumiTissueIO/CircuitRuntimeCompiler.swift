@@ -303,7 +303,7 @@ public enum CircuitRuntimeCompiler {
                 record.attributes["z"]?.doubleValue ?? 0
             )
             let type = UInt16(clamping: Int(record.nodeTypeID))
-            let fidelityRaw = record.attributes["numitissue_fidelity"]?.intValue.flatMap(Int.init) ?? FidelityLevel.detailedNeuron.rawValue
+            let fidelityRaw = record.attributes["numitissue_fidelity"]?.intValue.flatMap(UInt8.init) ?? FidelityLevel.detailedNeuron.rawValue
             let fidelity = FidelityLevel(rawValue: fidelityRaw) ?? .detailedNeuron
             neurons.append(CircuitNeuronInput(
                 nodeID: record.nodeID,
@@ -370,9 +370,9 @@ public enum CircuitRuntimeCompiler {
 
     private static func tileCoordinate(position: SIMD3<Double>, edge: Double) -> TileCoordinate {
         TileCoordinate(
-            Int32(clamping: Int(floor(position.x / edge))),
-            Int32(clamping: Int(floor(position.y / edge))),
-            Int32(clamping: Int(floor(position.z / edge)))
+            x: Int32(clamping: Int(floor(position.x / edge))),
+            y: Int32(clamping: Int(floor(position.y / edge))),
+            z: Int32(clamping: Int(floor(position.z / edge)))
         )
     }
 

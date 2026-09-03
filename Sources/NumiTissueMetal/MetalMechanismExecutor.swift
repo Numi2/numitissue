@@ -192,7 +192,7 @@ public actor MetalMechanismExecutor {
             threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
         )
         encoder.endEncoding()
-        try await Self.complete(commandBuffer)
+        try await complete(commandBuffer)
 
         let state = Self.readArray(from: stateBuffer, count: instances.state.count, as: Float.self)
         let statuses = Self.readArray(from: statusBuffer, count: instances.count, as: MetalMechanismExecutionStatus.self)
@@ -265,7 +265,7 @@ public actor MetalMechanismExecutor {
         return Array(UnsafeBufferPointer(start: pointer, count: count))
     }
 
-    private static func complete(_ commandBuffer: MTLCommandBuffer) async throws {
+    private func complete(_ commandBuffer: MTLCommandBuffer) async throws {
         try await withCheckedThrowingContinuation { continuation in
             commandBuffer.addCompletedHandler { buffer in
                 if buffer.status == .completed { continuation.resume() }

@@ -1060,7 +1060,7 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
         }
         if !commandSubmitted {
             commandSubmitted = true
-            try await context.awaitCompletion(command)
+            try await context.awaitCompletion(MetalCommandBufferHandle(command))
             commandBuffer = nil
         }
     }
@@ -1094,7 +1094,7 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
         let pipeline = try shaders.pipeline(.resetTransientState)
         encoder.ntDispatch1D(count: 4_096, pipeline: pipeline)
         encoder.endEncoding()
-        try await context.awaitCompletion(command)
+        try await context.awaitCompletion(MetalCommandBufferHandle(command))
     }
 
     private func writeControlInput(

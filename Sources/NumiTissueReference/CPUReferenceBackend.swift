@@ -16,6 +16,7 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
     private var shadow: TissueRuntimeState?
     private var committedEventWheel: EventDelayWheel?
     private var shadowEventWheel: EventDelayWheel?
+    private var stagedInterventionState: TissueRuntimeState?
     private var currentContext: ExecutionContext?
     private var input = RuntimeInputFrame()
     private var generatedEvents: [RoutedEvent] = []
@@ -74,7 +75,8 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
             }
         }
 
-        shadow = committed
+        shadow = stagedInterventionState ?? committed
+        stagedInterventionState = nil
         shadowEventWheel = wheel
         currentContext = context
         self.input = input
@@ -342,6 +344,31 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
 
 public enum MetalIndependentReferenceError: Error, Sendable {
     case noShadowState
+}
+
+extension CPUReferenceTissueBackend: InterventionAwareTissueBackend {
+    public func stageInterventions(
+        _ frame: TissueInterventionFrame,
+        context: ExecutionContext
+    ) async throws {
+        guard currentContext == nil else {
+            throw RuntimeExecutionError.transactionInProgress
+        }
+        guard let committed else {
+            throw RuntimeExecutionError.notLoaded
+        }
+        guard committed.epoch == context.epoch,
+              committed.time == context.startTime,
+              frame.tick == context.startTime.tick else {
+            throw RuntimeOverlayError.staleFrame(
+                expected: context.startTime.tick,
+                received: frame.tick
+            )
+        }
+        var candidate = committed
+        try TissueStateInterventionApplier.apply(frame, to: &candidate)
+        stagedInterventionState = candidate
+    }
 }
 
 public enum CPUReferenceBackendError: Error, Sendable, CustomStringConvertible {

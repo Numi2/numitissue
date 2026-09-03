@@ -2,7 +2,7 @@ import Foundation
 import NumiTissueCore
 import NumiTissueModels
 
-extension ReferenceTissueRuntime {
+extension CPUReferenceTissueBackend {
     func detectAndRouteSpikes(
         at absoluteTick: UInt64,
         transactionStartTick: UInt64,

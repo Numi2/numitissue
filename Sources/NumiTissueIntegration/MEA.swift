@@ -243,9 +243,9 @@ public enum StimulationPlanCompiler {
                 for (phaseIndex, phase) in pulse.phases.enumerated() {
                     let durationTicks = max(UInt32(clamping: microsecondsToTicks(UInt64(phase.durationMicroseconds))), 1)
                     runtime.append(TissueStimulus(
+                        destination: destination,
                         startTick: phaseTick,
                         durationTicks: durationTicks,
-                        destination: destination,
                         amplitude: phase.amplitudeAmperes,
                         kind: 1,
                         flags: UInt16(clamping: phaseIndex)

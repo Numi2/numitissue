@@ -394,17 +394,16 @@ struct NumiTissueExamplesEntryPoint {
             ]
         )
         let safetyEnvelope = WetwareStimulationSafetyEnvelope(
-            maximumAbsoluteAmplitudeMicroamps: 100,
+            maximumAbsoluteCurrentMicroamps: 100,
+            maximumPhaseDurationMicroseconds: 200,
             maximumChargePerPhaseMicrocoulombs: 0.08,
             maximumChargeDensityMicrocoulombsPerSquareCentimeter: 25,
-            maximumChargeImbalanceFraction: 0.01,
             maximumDutyCycle: 0.10,
             maximumFrequencyHertz: 100,
-            maximumTrainDurationMilliseconds: 2_000,
-            minimumIntertrainRestMilliseconds: 100,
-            maximumCumulativeChargeMicrocoulombsPerElectrodePerTrial: 10,
-            maximumCumulativeChargeMicrocoulombsPerElectrodePerProtocol: 250,
-            requireBiphasicChargeBalance: true
+            maximumSimultaneouslyActiveElectrodes: 1,
+            maximumChargeImbalanceFraction: 0.01,
+            minimumInterphaseGapMicroseconds: 50,
+            minimumIntertrialIntervalMilliseconds: 100
         )
         let study = WetwareOptimizationStudy(
             id: requiredUUID("2E5F5E96-DB47-5544-9CB7-CB89391603F6"),

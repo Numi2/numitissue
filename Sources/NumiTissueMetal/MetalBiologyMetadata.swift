@@ -53,7 +53,7 @@ public final class MetalBiologyMetadataBuffers: @unchecked Sendable {
             label: "NumiTissue.model.regulatoryMatrix"
         )
         regulatoryBias = try context.makePrivateBuffer(
-            length: max(1, model.regulatoryBias.count) * MemoryLayout<Float>.stride,
+            length: max(1, model.regulatoryBiases.count) * MemoryLayout<Float>.stride,
             label: "NumiTissue.model.regulatoryBias"
         )
         fateIdentity = try context.makePrivateBuffer(
@@ -72,7 +72,7 @@ public final class MetalBiologyMetadataBuffers: @unchecked Sendable {
         try Self.stage(model.regulatoryPrograms.map(\.stateAndMatrixRange), to: regulatoryStateAndMatrix, context: context, command: command, retained: &retained, label: "regulatoryStateAndMatrix")
         try Self.stage(model.regulatoryPrograms.map(\.biasAndTransitionRange), to: regulatoryBiasAndTransition, context: context, command: command, retained: &retained, label: "regulatoryBiasAndTransition")
         try Self.stage(model.regulatoryMatrix, to: regulatoryMatrix, context: context, command: command, retained: &retained, label: "regulatoryMatrix")
-        try Self.stage(model.regulatoryBias, to: regulatoryBias, context: context, command: command, retained: &retained, label: "regulatoryBias")
+        try Self.stage(model.regulatoryBiases, to: regulatoryBias, context: context, command: command, retained: &retained, label: "regulatoryBias")
         try Self.stage(model.fateTransitions.map(\.identity), to: fateIdentity, context: context, command: command, retained: &retained, label: "fateIdentity")
         try Self.stage(model.glialPrograms.map(\.identity), to: glialIdentity, context: context, command: command, retained: &retained, label: "glialIdentity")
         try await context.awaitCompletion(command)

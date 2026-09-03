@@ -91,49 +91,52 @@ public extension MetalStateArena {
 
 private extension MetalTileState {
     var runtimeState: RuntimeTileState {
-        RuntimeTileState(
+        var result = RuntimeTileState(
             id: TileID(rawValue: UInt64(idLo) | (UInt64(idHi) << 32)),
-            coordinate: TileCoordinate(x: coordinate.x, y: coordinate.y, z: coordinate.z),
-            cellRange: cellRange.runtimeRange,
-            segmentRange: segmentRange.runtimeRange,
-            compartmentRange: compartmentRange.runtimeRange,
-            synapseRange: synapseRange.runtimeRange,
-            fieldRange: fieldRange.runtimeRange,
-            microdomainRange: microdomainRange.runtimeRange,
-            activityScore: scores.x,
-            uncertaintyScore: scores.y,
-            damageScore: scores.z,
-            metabolicStress: scores.w,
-            flags: flags,
-            lastActiveTick: UInt64(lastActiveTickLo) | (UInt64(lastActiveTickHi) << 32)
+            coordinate: TileCoordinate(x: coordinate.x, y: coordinate.y, z: coordinate.z)
         )
+        result.flags = flags
+        result.fidelityMask = fidelityMask
+        result.cellRange = cellRange.runtimeRange
+        result.segmentRange = segmentRange.runtimeRange
+        result.compartmentRange = compartmentRange.runtimeRange
+        result.synapseRange = synapseRange.runtimeRange
+        result.fieldRange = fieldRange.runtimeRange
+        result.microdomainRange = microdomainRange.runtimeRange
+        result.lastActiveTick = UInt64(lastActiveTickLo) | (UInt64(lastActiveTickHi) << 32)
+        result.activityScore = scores.x
+        result.uncertaintyScore = scores.y
+        result.damageScore = scores.z
+        result.metabolicStress = scores.w
+        return result
     }
 }
 
 private extension MetalCellState {
     var runtimeState: RuntimeCellState {
-        RuntimeCellState(
+        var result = RuntimeCellState(
             id: CellID(rawValue: UInt64(idLo) | (UInt64(idHi) << 32)),
-            lineageID: LineageID(rawValue: UInt64(lineageLo) | (UInt64(lineageHi) << 32)),
+            lineage: LineageID(rawValue: UInt64(lineageLo) | (UInt64(lineageHi) << 32)),
             tileIndex: tileIndex,
             typeIndex: UInt16(truncatingIfNeeded: typeAndDevelopment),
-            developmentalState: DevelopmentalState(rawValue: UInt16(truncatingIfNeeded: typeAndDevelopment >> 16)) ?? .progenitor,
+            developmentalState: UInt16(truncatingIfNeeded: typeAndDevelopment >> 16),
             fidelity: FidelityLevel(rawValue: UInt8(truncatingIfNeeded: fidelityAndFlags)) ?? .cellAgent,
             position: position,
-            orientation: orientationAndRadius,
-            semiAxes: semiAxes,
-            velocity: velocity,
-            ageSeconds: ageCycleDifferentiationEnergy.x,
-            cycleProgress: ageCycleDifferentiationEnergy.y,
-            differentiationProgress: ageCycleDifferentiationEnergy.z,
-            energyReserve: ageCycleDifferentiationEnergy.w,
-            oxygenStress: stressDamageHazard.x,
-            glucoseStress: stressDamageHazard.y,
-            damage: stressDamageHazard.z,
-            apoptosisHazard: stressDamageHazard.w,
-            regulatoryRange: regulatoryRange.runtimeRange,
-            flags: fidelityAndFlags >> 16
+            orientation: orientation,
+            semiAxes: semiAxes
         )
+        result.velocity = velocity
+        result.ageSeconds = ageCycleDifferentiationEnergy.x
+        result.cycleProgress = ageCycleDifferentiationEnergy.y
+        result.differentiationProgress = ageCycleDifferentiationEnergy.z
+        result.energyReserve = ageCycleDifferentiationEnergy.w
+        result.oxygenStress = stressDamageHazard.x
+        result.glucoseStress = stressDamageHazard.y
+        result.damage = stressDamageHazard.z
+        result.apoptosisHazard = stressDamageHazard.w
+        result.regulatoryRange = regulatoryRange.runtimeRange
+        result.flags = UInt8(truncatingIfNeeded: fidelityAndFlags >> 8)
+        return result
     }
 }
 
@@ -143,15 +146,17 @@ private extension MetalSegmentState {
             id: SegmentID(rawValue: UInt64(idLo) | (UInt64(idHi) << 32)),
             cellIndex: cellIndex,
             parentSegmentIndex: parentSegmentIndex,
+            firstChildIndex: firstChildIndex,
+            nextSiblingIndex: nextSiblingIndex,
             compartmentIndex: compartmentIndex,
-            kind: SegmentKind(rawValue: UInt16(truncatingIfNeeded: typeAndFlags)) ?? .soma,
+            type: UInt16(truncatingIfNeeded: typeAndFlags),
+            flags: UInt16(truncatingIfNeeded: typeAndFlags >> 16),
             start: start,
             end: end,
             radiusMicrometers: radiusMyelinGrowthScore.x,
             myelinFraction: radiusMyelinGrowthScore.y,
             growthRateMicrometersPerSecond: radiusMyelinGrowthScore.z,
-            structuralScore: radiusMyelinGrowthScore.w,
-            flags: UInt16(truncatingIfNeeded: typeAndFlags >> 16)
+            structuralScore: radiusMyelinGrowthScore.w
         )
     }
 }
@@ -196,8 +201,8 @@ private extension MetalSynapseState {
             postTrace: prePostEligibilityConsolidation.y,
             eligibility: prePostEligibilityConsolidation.z,
             consolidation: prePostEligibilityConsolidation.w,
-            lastEventTick: UInt64(lastEventTickLo) | (UInt64(lastEventTickHi) << 32),
-            structuralScore: structuralReserved.x
+            structuralScore: structuralReserved.x,
+            lastEventTick: UInt64(lastEventTickLo) | (UInt64(lastEventTickHi) << 32)
         )
     }
 }
@@ -219,13 +224,13 @@ private extension MetalMicrodomainState {
             id: MicrodomainID(rawValue: UInt64(idLo) | (UInt64(idHi) << 32)),
             ownerCellIndex: ownerCellIndex,
             ownerCompartmentIndex: ownerCompartmentIndex,
-            speciesRange: speciesRange.runtimeRange,
             reactionNetworkIndex: UInt16(truncatingIfNeeded: reactionSolverFlags),
-            solverKind: MolecularSolverKind(rawValue: UInt8(truncatingIfNeeded: reactionSolverFlags >> 16)) ?? .deterministic,
+            solverKind: UInt8(truncatingIfNeeded: reactionSolverFlags >> 16),
             flags: UInt8(truncatingIfNeeded: reactionSolverFlags >> 24),
+            speciesRange: speciesRange.runtimeRange,
             volumeFemtoliters: volumeTemperaturePropensityReserved.x,
             temperatureKelvin: volumeTemperaturePropensityReserved.y,
-            totalPropensity: volumeTemperaturePropensityReserved.z
+            propensitySum: volumeTemperaturePropensityReserved.z
         )
     }
 }

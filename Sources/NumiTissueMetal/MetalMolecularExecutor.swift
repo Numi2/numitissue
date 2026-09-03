@@ -115,7 +115,7 @@ public actor MetalMolecularExecutor {
             threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
         )
         encoder.endEncoding()
-        try await Self.complete(commandBuffer)
+        try await complete(commandBuffer)
 
         let updatedDomains = Self.readArray(from: domainBuffer, count: domains.descriptors.count, as: MetalMolecularDomainDescriptor.self)
         let updatedSpecies = Self.readArray(from: speciesBuffer, count: domains.species.count, as: Float.self)
@@ -170,7 +170,7 @@ public actor MetalMolecularExecutor {
         return Array(UnsafeBufferPointer(start: buffer.contents().bindMemory(to: T.self, capacity: count), count: count))
     }
 
-    private static func complete(_ commandBuffer: MTLCommandBuffer) async throws {
+    private func complete(_ commandBuffer: MTLCommandBuffer) async throws {
         try await withCheckedThrowingContinuation { continuation in
             commandBuffer.addCompletedHandler { buffer in
                 if buffer.status == .completed { continuation.resume() }

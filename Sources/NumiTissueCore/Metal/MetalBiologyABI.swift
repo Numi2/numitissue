@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Metal)
+import Metal
+#endif
 
 public enum NTMetalAuxiliaryBufferSlot: String, CaseIterable, Sendable {
     case mechanisms
@@ -353,13 +356,13 @@ public struct NTMetalInterestPoint: Sendable {
 
 public final class NTMetalAuxiliaryResourceSet: @unchecked Sendable {
     #if canImport(Metal)
-    public var buffers: [NTMetalAuxiliaryBufferSlot: any Metal.MTLBuffer]
+    public var buffers: [NTMetalAuxiliaryBufferSlot: any MTLBuffer]
 
-    public init(buffers: [NTMetalAuxiliaryBufferSlot: any Metal.MTLBuffer] = [:]) {
+    public init(buffers: [NTMetalAuxiliaryBufferSlot: any MTLBuffer] = [:]) {
         self.buffers = buffers
     }
 
-    public subscript(_ slot: NTMetalAuxiliaryBufferSlot) -> (any Metal.MTLBuffer)? {
+    public subscript(_ slot: NTMetalAuxiliaryBufferSlot) -> (any MTLBuffer)? {
         buffers[slot]
     }
     #else

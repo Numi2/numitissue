@@ -31,10 +31,10 @@ public enum NMODLCompiler {
 
         for block in blocks {
             switch block.keyword {
-            case "INITIAL": model.initial = try NMODLBodyParser(block.body).parse().statements
-            case "BREAKPOINT": model.breakpoint = try NMODLBodyParser(block.body).parse().statements
-            case "BEFORE": model.beforeStep.append(contentsOf: try NMODLBodyParser(block.body).parse().statements)
-            case "AFTER": model.afterStep.append(contentsOf: try NMODLBodyParser(block.body).parse().statements)
+            case "INITIAL": model.initial = try parseBody(block.body).statements
+            case "BREAKPOINT": model.breakpoint = try parseBody(block.body).statements
+            case "BEFORE": model.beforeStep.append(contentsOf: try parseBody(block.body).statements)
+            case "AFTER": model.afterStep.append(contentsOf: try parseBody(block.body).statements)
             case "PROCEDURE", "FUNCTION", "DERIVATIVE", "KINETIC", "LINEAR", "NONLINEAR", "DISCRETE", "NET_RECEIVE":
                 model.routines.append(try parseRoutine(block))
             case "NEURON", "PARAMETER", "STATE", "ASSIGNED", "UNITS", "CONSTANT", "TITLE", "INDEPENDENT":
@@ -138,7 +138,7 @@ public enum NMODLCompiler {
 
     private static func parseRoutine(_ block: NMODLSourceBlock) throws -> MechanismRoutineIR {
         let signature = try parseSignature(block.header, keyword: block.keyword)
-        let parsed = try NMODLBodyParser(block.body).parse()
+        let parsed = try parseBody(block.body)
         let kind: MechanismRoutineKindIR
         switch block.keyword {
         case "FUNCTION": kind = .function
@@ -157,6 +157,11 @@ public enum NMODLCompiler {
             localVariables: parsed.locals,
             statements: parsed.statements
         )
+    }
+
+    private static func parseBody(_ source: String) throws -> NMODLParsedBody {
+        var parser = NMODLBodyParser(source)
+        return try parser.parse()
     }
 
     private static func parseSignature(_ header: String, keyword: String) throws -> (name: String, arguments: [String]) {

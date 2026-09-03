@@ -172,7 +172,7 @@ public final class NTMetalBufferArena: @unchecked Sendable {
         )
         let source = try allocateStaging(slot: slot, logicalLength: byteCount, label: "\(label ?? String(describing: slot)).Upload")
         if byteCount > 0 {
-            values.withUnsafeBytes { bytes in
+            _ = values.withUnsafeBytes { bytes in
                 memcpy(source.buffer.contents(), bytes.baseAddress!, byteCount)
             }
         }

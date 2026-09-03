@@ -2,7 +2,7 @@ import Foundation
 import NumiTissueCore
 import NumiTissueModels
 
-extension ReferenceTissueRuntime {
+extension CPUReferenceTissueBackend {
     func ingestInput(
         _ input: TissueInput,
         context: TransactionContext,

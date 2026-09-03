@@ -316,6 +316,49 @@ public struct MetalEvent: Sendable {
     public var reserved1: Float
     public var reserved2: Float
 
+    public init(
+        arrivalTickLo: UInt32,
+        arrivalTickHi: UInt32,
+        sourceLo: UInt32,
+        sourceHi: UInt32,
+        destinationLo: UInt32,
+        destinationHi: UInt32,
+        kindAndFlags: UInt32,
+        sequence: UInt32,
+        amplitude: Float,
+        payload0: Float = 0,
+        payload1: Float = 0,
+        payload2: Float = 0
+    ) {
+        self.arrivalTickLo = arrivalTickLo
+        self.arrivalTickHi = arrivalTickHi
+        self.sourceLo = sourceLo
+        self.sourceHi = sourceHi
+        self.destinationLo = destinationLo
+        self.destinationHi = destinationHi
+        self.kindAndFlags = kindAndFlags
+        self.sequence = sequence
+        self.amplitude = amplitude
+        self.reserved0 = payload0
+        self.reserved1 = payload1
+        self.reserved2 = payload2
+    }
+
+    public var payload0: Float {
+        get { reserved0 }
+        set { reserved0 = newValue }
+    }
+
+    public var payload1: Float {
+        get { reserved1 }
+        set { reserved1 = newValue }
+    }
+
+    public var payload2: Float {
+        get { reserved2 }
+        set { reserved2 = newValue }
+    }
+
     public init(_ event: RoutedEvent) {
         arrivalTickLo = UInt32(truncatingIfNeeded: event.arrivalTick)
         arrivalTickHi = UInt32(truncatingIfNeeded: event.arrivalTick >> 32)

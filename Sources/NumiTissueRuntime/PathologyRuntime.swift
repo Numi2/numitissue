@@ -72,6 +72,11 @@ public struct NeuralPathologyRuntimeBinding: Sendable, Hashable, Codable {
 }
 
 public struct NeuralPathologyRuntimeLayout: Sendable, Hashable, Codable {
+    private struct BindingIdentity: Hashable {
+        let channel: String
+        let path: String
+    }
+
     public var bindings: [NeuralPathologyRuntimeBinding]
 
     public init(bindings: [NeuralPathologyRuntimeBinding]) {
@@ -80,7 +85,7 @@ public struct NeuralPathologyRuntimeLayout: Sendable, Hashable, Codable {
 
     public func validated() throws -> Self {
         guard !bindings.isEmpty,
-              Set(bindings.map { ($0.channel.rawValue, $0.path) }).count == bindings.count else {
+              Set(bindings.map { BindingIdentity(channel: $0.channel.rawValue, path: $0.path) }).count == bindings.count else {
             throw NeuralPathologyRuntimeError.invalidLayout
         }
         for binding in bindings { _ = try binding.validated() }
@@ -96,7 +101,7 @@ public struct NeuralPathologyRuntimeLayout: Sendable, Hashable, Codable {
         conductionVelocityPath: String = "mechanism.parameter.conduction_velocity_multiplier",
         apoptosisHazardPath: String = "cell.apoptosis_hazard_per_second"
     ) -> Self {
-        Self(bindings: [
+        let bindings: [NeuralPathologyRuntimeBinding] = [
             NeuralPathologyRuntimeBinding(
                 channel: .energyReserve,
                 path: "cell.energy_reserve",
@@ -183,7 +188,8 @@ public struct NeuralPathologyRuntimeLayout: Sendable, Hashable, Codable {
                 persistence: .transaction,
                 minimum: 0
             )
-        ])
+        ]
+        return Self(bindings: bindings)
     }
 }
 

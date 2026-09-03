@@ -7,7 +7,8 @@ public enum NMODLImporter {
 
     public static func parse(_ source: String, sourceName: String = "memory.mod") throws -> MechanismModelIR {
         let sanitized = try NMODLPreprocessor.sanitize(source)
-        let blocks = try NMODLTopLevelScanner(source: sanitized).scan()
+        var scanner = NMODLTopLevelScanner(source: sanitized)
+        let blocks = try scanner.scan()
         guard !blocks.isEmpty else { throw NMODLError.noBlocks }
 
         var model = MechanismModelIR(name: sourceName.replacingOccurrences(of: ".mod", with: ""))
@@ -86,6 +87,7 @@ public enum NMODLImporter {
                         case "VALENCE": valence = Int(word); mode = nil
                         default: break
                         }
+                    }
                 }
                 model.ions.append(MechanismIonAccessIR(ion: ion, readVariables: reads, writeVariables: writes, valence: valence))
             case "RANGE": model.rangeVariables.append(contentsOf: words.dropFirst())
@@ -185,7 +187,8 @@ public enum NMODLImporter {
 
     private static func parseArguments(from source: String) throws -> [String] {
         guard let opening = source.firstIndex(of: "("), let closing = source.lastIndex(of: ")"), opening < closing else {
-            return source.trimmingCharacters(in: .whitespaces).isEmpty ? [] : { throw NMODLError.malformedRoutineHeader(source) }()
+            if source.trimmingCharacters(in: .whitespaces).isEmpty { return [] }
+            throw NMODLError.malformedRoutineHeader(source)
         }
         return source[source.index(after: opening)..<closing]
             .split(separator: ",")

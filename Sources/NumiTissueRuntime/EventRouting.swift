@@ -94,7 +94,7 @@ public struct RouteFanout: Sendable, Hashable, Codable {
     }
 }
 
-public enum EventOverflowPolicy: UInt8, Sendable, Codable {
+public enum EventOverflowPolicy: UInt8, Sendable, Hashable, Codable {
     case rejectTransaction
     case dropLowestAmplitude
     case dropLatest
@@ -105,6 +105,8 @@ public enum EventRoutingError: Error, Sendable, CustomStringConvertible {
     case horizonExceeded(arrival: UInt64, horizonEnd: UInt64)
     case capacityExceeded(capacity: Int)
     case invalidRouteRange
+    case unsupportedSnapshotVersion(UInt32)
+    case invalidSnapshot(String)
 
     public var description: String {
         switch self {
@@ -112,7 +114,80 @@ public enum EventRoutingError: Error, Sendable, CustomStringConvertible {
         case .horizonExceeded(let arrival, let end): return "Event at tick \(arrival) exceeds delay-wheel horizon ending at \(end)"
         case .capacityExceeded(let capacity): return "Event queue exceeded capacity \(capacity)"
         case .invalidRouteRange: return "Route fanout references an invalid route range"
+        case .unsupportedSnapshotVersion(let version): return "Unsupported event-wheel snapshot version \(version)"
+        case .invalidSnapshot(let reason): return "Invalid event-wheel snapshot: \(reason)"
         }
+    }
+}
+
+/// Portable checkpoint representation of a bounded delay wheel. Events retain their assigned
+/// sequence numbers, so restore does not change ordering among otherwise identical events.
+@frozen
+public struct EventDelayWheelSnapshot: Sendable, Hashable, Codable {
+    public var schemaVersion: UInt32
+    public var originTick: UInt64
+    public var bucketCount: Int
+    public var bucketWidthTicks: UInt64
+    public var capacity: Int
+    public var overflowPolicy: EventOverflowPolicy
+    public var nextSequence: UInt32
+    public var events: [RoutedEvent]
+
+    public init(
+        schemaVersion: UInt32 = 1,
+        originTick: UInt64,
+        bucketCount: Int,
+        bucketWidthTicks: UInt64,
+        capacity: Int,
+        overflowPolicy: EventOverflowPolicy,
+        nextSequence: UInt32,
+        events: [RoutedEvent]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.originTick = originTick
+        self.bucketCount = bucketCount
+        self.bucketWidthTicks = bucketWidthTicks
+        self.capacity = capacity
+        self.overflowPolicy = overflowPolicy
+        self.nextSequence = nextSequence
+        self.events = events
+    }
+
+    public var horizonEndTick: UInt64 {
+        originTick &+ UInt64(bucketCount) &* bucketWidthTicks
+    }
+
+    public func validated() throws -> Self {
+        guard schemaVersion == 1 else {
+            throw EventRoutingError.unsupportedSnapshotVersion(schemaVersion)
+        }
+        guard bucketCount > 1,
+              bucketWidthTicks > 0,
+              capacity > 0,
+              events.count <= capacity else {
+            throw EventRoutingError.invalidSnapshot("invalid dimensions or capacity")
+        }
+        let horizon = horizonEndTick
+        guard horizon >= originTick else {
+            throw EventRoutingError.invalidSnapshot("horizon overflow")
+        }
+        var ordered = events
+        guard ordered.allSatisfy({
+            $0.arrivalTick >= originTick &&
+            $0.arrivalTick < horizon &&
+            $0.amplitude.isFinite
+        }) else {
+            throw EventRoutingError.invalidSnapshot("event outside horizon or non-finite amplitude")
+        }
+        let sequences = Set(ordered.map(\.sequence))
+        guard sequences.count == ordered.count,
+              !sequences.contains(nextSequence) else {
+            throw EventRoutingError.invalidSnapshot("active event sequence collision")
+        }
+        ordered.sort()
+        var result = self
+        result.events = ordered
+        return result
     }
 }
 
@@ -149,9 +224,44 @@ public struct EventDelayWheel: Sendable {
         self.nextSequence = 0
     }
 
+    public init(snapshot source: EventDelayWheelSnapshot) throws {
+        let snapshot = try source.validated()
+        bucketCount = snapshot.bucketCount
+        bucketWidthTicks = snapshot.bucketWidthTicks
+        capacity = snapshot.capacity
+        overflowPolicy = snapshot.overflowPolicy
+        originTick = snapshot.originTick
+        buckets = Array(repeating: [], count: snapshot.bucketCount)
+        eventCount = snapshot.events.count
+        nextSequence = snapshot.nextSequence
+        for event in snapshot.events {
+            let index = Int(
+                (event.arrivalTick / snapshot.bucketWidthTicks) %
+                    UInt64(snapshot.bucketCount)
+            )
+            buckets[index].append(event)
+        }
+    }
+
     public var count: Int { eventCount }
     public var currentTick: UInt64 { originTick }
     public var horizonEndTick: UInt64 { originTick &+ UInt64(bucketCount) &* bucketWidthTicks }
+
+    public var pendingEvents: [RoutedEvent] {
+        buckets.flatMap { $0 }.sorted()
+    }
+
+    public func snapshot() -> EventDelayWheelSnapshot {
+        EventDelayWheelSnapshot(
+            originTick: originTick,
+            bucketCount: bucketCount,
+            bucketWidthTicks: bucketWidthTicks,
+            capacity: capacity,
+            overflowPolicy: overflowPolicy,
+            nextSequence: nextSequence,
+            events: pendingEvents
+        )
+    }
 
     public mutating func schedule(_ input: RoutedEvent) throws {
         guard input.arrivalTick >= originTick else {
@@ -159,6 +269,9 @@ public struct EventDelayWheel: Sendable {
         }
         guard input.arrivalTick < horizonEndTick else {
             throw EventRoutingError.horizonExceeded(arrival: input.arrivalTick, horizonEnd: horizonEndTick)
+        }
+        guard input.amplitude.isFinite else {
+            throw EventRoutingError.invalidSnapshot("scheduled event has non-finite amplitude")
         }
 
         var event = input
@@ -175,8 +288,16 @@ public struct EventDelayWheel: Sendable {
         eventCount += 1
     }
 
+    /// Scheduling a collection is atomic when any element fails. This is required because input
+    /// ingestion is part of a transaction: a rejected batch cannot leave an accepted prefix.
     public mutating func schedule<S: Sequence>(contentsOf events: S) throws where S.Element == RoutedEvent {
-        for event in events { try schedule(event) }
+        let previous = self
+        do {
+            for event in events { try schedule(event) }
+        } catch {
+            self = previous
+            throw error
+        }
     }
 
     /// Removes all events in [originTick, throughTick), preserving exact timestamp order.
@@ -189,8 +310,7 @@ public struct EventDelayWheel: Sendable {
         }
 
         var delivered: [RoutedEvent] = []
-        let start = originTick
-        var tick = start
+        var tick = originTick
         while tick < throughTick {
             let index = bucketIndex(for: tick)
             if !buckets[index].isEmpty {
@@ -267,7 +387,9 @@ public struct EventRouteTable: Sendable {
         self.fanoutBySource.reserveCapacity(fanouts.count)
         for (index, fanout) in self.fanouts.enumerated() {
             guard Int(fanout.routeRange.upperBound) <= routes.count else { throw EventRoutingError.invalidRouteRange }
-            fanoutBySource[fanout.source] = index
+            guard fanoutBySource.updateValue(index, forKey: fanout.source) == nil else {
+                throw EventRoutingError.invalidRouteRange
+            }
         }
     }
 

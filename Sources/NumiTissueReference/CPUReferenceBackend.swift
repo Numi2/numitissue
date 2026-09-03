@@ -95,7 +95,10 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
         case .updateChannels:
             CPUReferenceKernels.updateChannels(state: &state, dtMilliseconds: ticksToMilliseconds(tickRange.count))
         case .solveCableTrees:
-            CPUReferenceKernels.solveCableTrees(state: &state, dtMilliseconds: ticksToMilliseconds(tickRange.count))
+            try ReferenceCableTreeSolver.solve(
+                state: &state,
+                dtMilliseconds: ticksToMilliseconds(tickRange.count)
+            )
         case .detectSpikes:
             let spikes = CPUReferenceKernels.detectSpikes(state: &state, tickRange: tickRange)
             generatedEvents.append(contentsOf: spikes)

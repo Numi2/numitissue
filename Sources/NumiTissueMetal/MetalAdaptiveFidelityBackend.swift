@@ -346,15 +346,19 @@ public actor MetalAdaptiveTissueBackend: InterventionAwareTissueBackend {
         var bytes: UInt64 = 0
         bytes &+= UInt64(max(capacity.tiles, 1) * MemoryLayout<MetalTileState>.stride)
         bytes &+= UInt64(max(capacity.cells, 1) * MemoryLayout<MetalCellState>.stride)
-        bytes &+= UInt64(max(state.regulatoryState.count, capacity.cells * 32, 1) * MemoryLayout<Float>.stride)
+        bytes &+= UInt64(maximum(state.regulatoryState.count, capacity.cells * 32, 1) * MemoryLayout<Float>.stride)
         bytes &+= UInt64(max(capacity.segments, 1) * MemoryLayout<MetalSegmentState>.stride)
         bytes &+= UInt64(max(capacity.compartments, 1) * MemoryLayout<MetalCompartmentState>.stride)
-        bytes &+= UInt64(max(state.mechanismState.count, capacity.compartments * 16, 1) * MemoryLayout<Float>.stride)
+        bytes &+= UInt64(maximum(state.mechanismState.count, capacity.compartments * 16, 1) * MemoryLayout<Float>.stride)
         bytes &+= UInt64(max(capacity.synapses, 1) * MemoryLayout<MetalSynapseState>.stride)
         bytes &+= UInt64(max(capacity.fieldValues, 1) * MemoryLayout<MetalFieldState>.stride)
         bytes &+= UInt64(max(capacity.microdomains, 1) * MemoryLayout<MetalMicrodomainState>.stride)
         bytes &+= UInt64(max(capacity.molecularSpecies, 1) * MemoryLayout<Float>.stride)
         return bytes
+    }
+
+    private static func maximum(_ values: Int...) -> Int {
+        values.max() ?? 0
     }
 }
 #endif

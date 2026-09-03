@@ -1,0 +1,4 @@
+{
+  "rateConstantPerSecond": 0.5,
+  "species": {"A": 100.0}
+}

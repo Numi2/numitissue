@@ -1,0 +1,30 @@
+{
+  "corpusVersion": "0.1.0",
+  "entries": [
+    {
+      "id": "electrophysiology.passive-rc",
+      "manifestPath": "electrophysiology/passive-rc/case.json",
+      "required": true,
+      "tier": "analytical"
+    },
+    {
+      "id": "molecular.first-order-decay",
+      "manifestPath": "molecular/first-order-decay/case.json",
+      "required": true,
+      "tier": "analytical"
+    },
+    {
+      "id": "transaction.event-wheel-order",
+      "manifestPath": "transaction/event-wheel-order/case.json",
+      "required": true,
+      "tier": "smoke"
+    }
+  ],
+  "metadata": {
+    "numitissue.phase": "1",
+    "numitissue.time.quantum.microseconds": "25",
+    "numitissue.validation.policy": "tolerances-live-in-manifests"
+  },
+  "name": "NumiTissue Phase 1 Scientific Validation Corpus",
+  "schemaVersion": 1
+}

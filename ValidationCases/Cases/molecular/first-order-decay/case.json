@@ -1,0 +1,47 @@
+{
+  "criteria": [
+    {
+      "absoluteTolerance": 0.02,
+      "comparison": "trace",
+      "id": "species-trace",
+      "metadata": {},
+      "minimumCorrelation": 0.9999,
+      "minimumSampleCount": 20,
+      "observable": "microdomain.species.A",
+      "relativeTolerance": 0.002,
+      "rootMeanSquareTolerance": 0.01,
+      "unit": "molecule-equivalent"
+    },
+    {
+      "comparison": "topologyInvariant",
+      "id": "nonnegative",
+      "metadata": {"predicate": "value>=0"},
+      "observable": "microdomain.species.A.minimum",
+      "unit": "molecule-equivalent"
+    }
+  ],
+  "deterministic": true,
+  "domain": "molecular",
+  "id": "molecular.first-order-decay",
+  "inputPath": "input.json",
+  "metadata": {
+    "reference.authority": "analytical",
+    "reference.generator": "NumiTissueAnalyticalReferences.firstOrderDecay"
+  },
+  "modelPath": "model.json",
+  "randomSeeds": [],
+  "reference": {
+    "artifactPath": "expected.json",
+    "citation": "dA/dt=-kA",
+    "engine": "closed-form mass action",
+    "kind": "analytical",
+    "metadata": {},
+    "version": "1"
+  },
+  "requiredProfiles": ["scientific"],
+  "schemaVersion": 1,
+  "summary": "Verifies deterministic reaction integration against the analytical exponential decay and checks non-negativity.",
+  "tags": ["analytical", "mass-action", "deterministic", "phase-1"],
+  "tier": "analytical",
+  "title": "First-order molecular decay"
+}

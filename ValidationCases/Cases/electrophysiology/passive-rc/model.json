@@ -1,0 +1,6 @@
+{
+  "capacitanceNanofarads": 1.0,
+  "initialVoltageMillivolts": -75.0,
+  "leakConductanceMicrosiemens": 0.1,
+  "leakReversalMillivolts": -65.0
+}

@@ -1,0 +1,5 @@
+{
+  "equation": "V(t)=Vinf+(V0-Vinf)exp(-t/tau)",
+  "steadyStateMillivolts": -55.0,
+  "tauMilliseconds": 10.0
+}

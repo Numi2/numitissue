@@ -1,0 +1,11 @@
+{
+  "bucketCount": 8,
+  "bucketWidthTicks": 10,
+  "capacity": 4,
+  "events": [
+    {"amplitude": 1.0, "arrivalTick": 105, "destination": 9, "kind": "spike", "source": 2},
+    {"amplitude": 1.0, "arrivalTick": 105, "destination": 9, "kind": "spike", "source": 1},
+    {"amplitude": 1.0, "arrivalTick": 104, "destination": 1, "kind": "spike", "source": 8}
+  ],
+  "originTick": 100
+}

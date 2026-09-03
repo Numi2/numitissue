@@ -1,0 +1,7 @@
+{
+  "deliveryOrder": [
+    {"arrivalTick": 104, "destination": 1, "source": 8},
+    {"arrivalTick": 105, "destination": 9, "source": 1},
+    {"arrivalTick": 105, "destination": 9, "source": 2}
+  ]
+}

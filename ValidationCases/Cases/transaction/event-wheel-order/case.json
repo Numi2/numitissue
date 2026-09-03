@@ -1,0 +1,46 @@
+{
+  "criteria": [
+    {
+      "comparison": "exactDigest",
+      "id": "delivery-order",
+      "metadata": {},
+      "observable": "events.delivery-order",
+      "unit": "ordered-event"
+    },
+    {
+      "comparison": "topologyInvariant",
+      "id": "capacity-rejection",
+      "metadata": {"predicate": "rejectTransaction"},
+      "observable": "events.overflow",
+      "unit": "boolean"
+    },
+    {
+      "comparison": "topologyInvariant",
+      "id": "horizon-rejection",
+      "metadata": {"predicate": "out-of-horizon-is-rejected"},
+      "observable": "events.horizon",
+      "unit": "boolean"
+    }
+  ],
+  "deterministic": true,
+  "domain": "transaction",
+  "id": "transaction.event-wheel-order",
+  "inputPath": "input.json",
+  "metadata": {"reference.authority": "runtime-contract"},
+  "modelPath": null,
+  "randomSeeds": [],
+  "reference": {
+    "artifactPath": "expected.json",
+    "citation": "RoutedEvent Comparable contract",
+    "engine": "EventDelayWheel ordering contract",
+    "kind": "invariant",
+    "metadata": {},
+    "version": "1"
+  },
+  "requiredProfiles": ["boundedDeterministic", "scientific"],
+  "schemaVersion": 1,
+  "summary": "Verifies exact timestamp ordering, stable tie breaking, horizon checks, and bounded overflow semantics.",
+  "tags": ["deterministic", "events", "rollback", "phase-1"],
+  "tier": "smoke",
+  "title": "Deterministic event-wheel ordering"
+}

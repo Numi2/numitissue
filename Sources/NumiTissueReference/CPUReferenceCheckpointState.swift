@@ -31,8 +31,9 @@ extension CPUReferenceTissueBackend: RuntimeBackendCheckpointStateProvider {
     }
 
     public func exportBackendCheckpointState() async throws -> Data {
+        let snapshot = try await exportEventWheelSnapshot()
         let payload = try CPUReferenceCheckpointState(
-            eventWheel: exportEventWheelSnapshot()
+            eventWheel: snapshot
         ).validated()
         return try RuntimeBackendCheckpointArchive.encode(
             backendIdentifier: checkpointBackendIdentifier,
@@ -52,7 +53,7 @@ extension CPUReferenceTissueBackend: RuntimeBackendCheckpointStateProvider {
             expectedBackendIdentifier: checkpointBackendIdentifier,
             expectedPayloadVersion: 1
         ).validated()
-        try restoreEventWheelSnapshot(payload.eventWheel)
+        try await restoreEventWheelSnapshot(payload.eventWheel)
     }
 }
 

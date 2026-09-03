@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=75,<76"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "numitissue-reference"
+version = "1.0.0"
+description = "Fixed-engine reference and SONATA HDF5 sidecar for NumiTissue"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "h5py==3.16.0",
+]
+
+[project.scripts]
+numitissue-reference = "numitissue_reference:main"
+
+[tool.setuptools]
+py-modules = ["numitissue_reference"]

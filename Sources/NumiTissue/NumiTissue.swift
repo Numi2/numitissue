@@ -11,7 +11,7 @@ import Foundation
 
 public enum NumiTissueBuild {
     public static let semanticVersion = "1.0.0-dev"
-    public static let checkpointFormatVersion: UInt32 = 1
+    public static let checkpointFormatVersion: UInt32 = 2
     public static let fastTickMicroseconds: UInt64 = 25
     public static let transactionTicks: UInt64 = 200
     public static let transactionMilliseconds: Double = 5
@@ -78,8 +78,8 @@ public actor NumiTissueSession {
     }
 
     /// Restores both authoritative biological pools and backend-specific committed state, including
-    /// delayed events. Checkpoints without opaque backend state remain loadable for compatibility,
-    /// but cannot restore queues that were not present when they were created.
+    /// delayed events. Opaque backend state is validated before the backend adopts the biological
+    /// pools, so malformed or incompatible continuation data cannot leave a half-loaded session.
     public func load(
         model: CompiledTissueModel,
         checkpoint source: TissueCheckpoint,
@@ -89,17 +89,35 @@ public actor NumiTissueSession {
         let checkpoint = try source.validated(
             expectedModelDigest: expectedModelDigest
         )
-        try await backend.load(
-            model: model,
-            initialState: checkpoint.state
-        )
+        let checkpointable: (any RuntimeBackendCheckpointStateProvider)?
         if let opaque = checkpoint.opaqueModelState {
-            guard let checkpointable = backend as?
+            guard let provider = backend as?
                     any RuntimeBackendCheckpointStateProvider else {
                 throw NumiTissueSessionError.backendCheckpointStateUnsupported(
                     backend.capabilities.backendName
                 )
             }
+            do {
+                try await provider.validateBackendCheckpointState(
+                    opaque,
+                    committedState: checkpoint.state
+                )
+            } catch {
+                throw NumiTissueSessionError.backendCheckpointPreflightFailed(
+                    String(describing: error)
+                )
+            }
+            checkpointable = provider
+        } else {
+            checkpointable = nil
+        }
+
+        try await backend.load(
+            model: model,
+            initialState: checkpoint.state
+        )
+        if let opaque = checkpoint.opaqueModelState,
+           let checkpointable {
             do {
                 try await checkpointable.restoreBackendCheckpointState(opaque)
             } catch {
@@ -270,6 +288,7 @@ public enum NumiTissueSessionError: Error, Sendable, CustomStringConvertible {
     case notLoaded
     case invalidStepCount
     case backendCheckpointStateUnsupported(String)
+    case backendCheckpointPreflightFailed(String)
     case backendCheckpointExportFailed(String)
     case backendCheckpointRestoreFailed(String)
 
@@ -283,6 +302,8 @@ public enum NumiTissueSessionError: Error, Sendable, CustomStringConvertible {
             return "NumiTissue step count cannot be negative"
         case .backendCheckpointStateUnsupported(let backend):
             return "Backend \(backend) cannot export complete resumable state"
+        case .backendCheckpointPreflightFailed(let reason):
+            return "Backend checkpoint-state preflight failed: \(reason)"
         case .backendCheckpointExportFailed(let reason):
             return "Backend checkpoint-state export failed: \(reason)"
         case .backendCheckpointRestoreFailed(let reason):

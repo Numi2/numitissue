@@ -84,10 +84,15 @@ final class MetalFidelityMigrationCoordinator: @unchecked Sendable {
         }
         guard !decisions.isEmpty else { return nil }
 
+        // The device policy stores requested levels directly in the packed shadow. Restore every
+        // cell to its actual source fidelity first. The migration engine then applies exactly the
+        // reconciled decision set and no unrelated device-side request can leak into the commit.
         var source = shadow
+        for index in source.cells.indices {
+            source.cells[index].fidelity = committedTemplate.cells[index].fidelity
+        }
         for decision in decisions {
-            guard source.cells.indices.contains(Int(decision.cellIndex)),
-                  committedTemplate.cells.indices.contains(Int(decision.cellIndex)) else {
+            guard source.cells.indices.contains(Int(decision.cellIndex)) else {
                 throw FidelityMigrationError.invalidCellIndex(decision.cellIndex)
             }
             let committedLevel = committedTemplate.cells[Int(decision.cellIndex)].fidelity
@@ -98,10 +103,6 @@ final class MetalFidelityMigrationCoordinator: @unchecked Sendable {
                     actual: committedLevel
                 )
             }
-            // The device policy writes its target directly into the packed shadow. Restore the
-            // source level before projection so the migration engine sees the topology that
-            // actually produced the current electrical and molecular state.
-            source.cells[Int(decision.cellIndex)].fidelity = decision.from
         }
 
         var nextContext = context
@@ -146,27 +147,47 @@ final class MetalFidelityMigrationCoordinator: @unchecked Sendable {
             let to = shadow.cells[index].fidelity
             guard from != to else { continue }
             let cell = shadow.cells[index]
-            let tile = shadow.tiles.indices.contains(Int(cell.tileIndex))
-                ? shadow.tiles[Int(cell.tileIndex)]
-                : RuntimeTileState(id: TileID(rawValue: 0), coordinate: TileCoordinate(x: 0, y: 0, z: 0))
+            let tile: RuntimeTileState
+            if shadow.tiles.indices.contains(Int(cell.tileIndex)) {
+                tile = shadow.tiles[Int(cell.tileIndex)]
+            } else {
+                tile = RuntimeTileState(
+                    id: TileID(rawValue: 0),
+                    coordinate: TileCoordinate(x: 0, y: 0, z: 0)
+                )
+            }
             let activity = max(tile.activityScore, 0)
             let uncertainty = max(tile.uncertaintyScore, 0)
             let damage = max(tile.damageScore, cell.damage)
-            let metabolic = max(tile.metabolicStress, max(cell.oxygenStress, cell.glucoseStress))
-            let score = min(max(0.30 * activity + 0.25 * uncertainty + 0.25 * damage + 0.20 * metabolic, 0), 1)
+            let metabolic = max(
+                tile.metabolicStress,
+                max(cell.oxygenStress, cell.glucoseStress)
+            )
+            let score = min(
+                max(
+                    0.30 * activity +
+                    0.25 * uncertainty +
+                    0.25 * damage +
+                    0.20 * metabolic,
+                    0
+                ),
+                1
+            )
             var reasonMask: UInt32 = 0
             if activity > 0 { reasonMask |= 1 << 0 }
             if uncertainty > 0 { reasonMask |= 1 << 1 }
             if damage > 0 { reasonMask |= 1 << 2 }
             if metabolic > 0 { reasonMask |= 1 << 3 }
-            result.append(FidelityDecision(
-                cellIndex: UInt32(index),
-                from: from,
-                to: to,
-                kind: to.rawValue > from.rawValue ? .promote : .demote,
-                score: score,
-                reasonMask: reasonMask
-            ))
+            result.append(
+                FidelityDecision(
+                    cellIndex: UInt32(index),
+                    from: from,
+                    to: to,
+                    kind: to.rawValue > from.rawValue ? .promote : .demote,
+                    score: score,
+                    reasonMask: reasonMask
+                )
+            )
         }
         return result
     }

@@ -4,14 +4,16 @@ import Metal
 import NumiTissueCore
 import NumiTissueModels
 
-/// Immutable integer metadata is kept separate from overlayable FP32 tables. These buffers map
-/// cell programs to regulatory, growth, fate and glial programs and map synapse/field prototypes
-/// to their semantic kinds. They remain valid across all transaction-local parameter overlays.
+/// Immutable integer and coefficient metadata is kept separate from overlayable FP32 tables.
+/// These buffers map cell programs to regulatory, growth, fate and glial programs and preserve
+/// compiled regulatory topology across all transaction-local parameter overlays.
 public final class MetalBiologyMetadataBuffers: @unchecked Sendable {
     public let synapseTypeAndFlags: MTLBuffer
     public let fieldAddressing: MTLBuffer
     public let regulatoryStateAndMatrix: MTLBuffer
     public let regulatoryBiasAndTransition: MTLBuffer
+    public let regulatoryMatrix: MTLBuffer
+    public let regulatoryBias: MTLBuffer
     public let fateIdentity: MTLBuffer
     public let glialIdentity: MTLBuffer
 
@@ -46,6 +48,14 @@ public final class MetalBiologyMetadataBuffers: @unchecked Sendable {
             length: max(1, model.regulatoryPrograms.count) * MemoryLayout<UInt4>.stride,
             label: "NumiTissue.model.regulatoryBiasAndTransition"
         )
+        regulatoryMatrix = try context.makePrivateBuffer(
+            length: max(1, model.regulatoryMatrix.count) * MemoryLayout<Float>.stride,
+            label: "NumiTissue.model.regulatoryMatrix"
+        )
+        regulatoryBias = try context.makePrivateBuffer(
+            length: max(1, model.regulatoryBias.count) * MemoryLayout<Float>.stride,
+            label: "NumiTissue.model.regulatoryBias"
+        )
         fateIdentity = try context.makePrivateBuffer(
             length: max(1, model.fateTransitions.count) * MemoryLayout<UInt4>.stride,
             label: "NumiTissue.model.fateIdentity"
@@ -61,6 +71,8 @@ public final class MetalBiologyMetadataBuffers: @unchecked Sendable {
         try Self.stage(model.fieldParameters.map(\.addressing), to: fieldAddressing, context: context, command: command, retained: &retained, label: "fieldAddressing")
         try Self.stage(model.regulatoryPrograms.map(\.stateAndMatrixRange), to: regulatoryStateAndMatrix, context: context, command: command, retained: &retained, label: "regulatoryStateAndMatrix")
         try Self.stage(model.regulatoryPrograms.map(\.biasAndTransitionRange), to: regulatoryBiasAndTransition, context: context, command: command, retained: &retained, label: "regulatoryBiasAndTransition")
+        try Self.stage(model.regulatoryMatrix, to: regulatoryMatrix, context: context, command: command, retained: &retained, label: "regulatoryMatrix")
+        try Self.stage(model.regulatoryBias, to: regulatoryBias, context: context, command: command, retained: &retained, label: "regulatoryBias")
         try Self.stage(model.fateTransitions.map(\.identity), to: fateIdentity, context: context, command: command, retained: &retained, label: "fateIdentity")
         try Self.stage(model.glialPrograms.map(\.identity), to: glialIdentity, context: context, command: command, retained: &retained, label: "glialIdentity")
         try await context.awaitCompletion(command)
@@ -73,6 +85,8 @@ public final class MetalBiologyMetadataBuffers: @unchecked Sendable {
             fieldAddressing,
             regulatoryStateAndMatrix,
             regulatoryBiasAndTransition,
+            regulatoryMatrix,
+            regulatoryBias,
             fateIdentity,
             glialIdentity
         ]

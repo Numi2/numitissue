@@ -74,8 +74,8 @@ public final class Metal4ArgumentTableCache: @unchecked Sendable {
     private var entries: [Metal4ArgumentTableKey: Metal4ArgumentTableEntry] = [:]
     private var generation: UInt64 = 0
 
-    public init(device: MTLDevice, maximumBindingCount: Int = 32) throws {
-        guard (1...256).contains(maximumBindingCount) else {
+    public init(device: MTLDevice, maximumBindingCount: Int = 31) throws {
+        guard (1...31).contains(maximumBindingCount) else {
             throw Metal4ArgumentTableError.invalidMaximumBindingCount(
                 maximumBindingCount
             )
@@ -247,7 +247,7 @@ public enum Metal4ArgumentTableError: Error, Sendable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .invalidMaximumBindingCount(let count):
-            return "Metal 4 argument-table binding count \(count) is outside 1...256"
+            return "Metal 4 argument-table binding count \(count) is outside 1...31"
         case .emptyBindings:
             return "Metal 4 argument table requires at least one binding"
         case .emptyLabel:

@@ -7,16 +7,16 @@ public extension Metal4ExecutionConfiguration {
     /// but can split at safe submission boundaries when deep cable trees exceed the bounded arena.
     static let phase3Scientific = Self(
         requirement: .required,
+        commandBufferPoolSize: 3,
+        maximumBufferBindingCount: 31,
         batchingMode: .boundedDispatchGroups,
-        indirectDispatchPolicy: .disabled,
-        commandBufferSlotCount: 3,
-        maximumBufferBindingCount: 32,
         maximumDispatchesPerGroup: 8_192,
-        directDispatchThreshold: 4_096,
-        qualifiedIndirectKernels: [],
+        indirectDispatchMode: .disabled,
+        indirectDispatchMinimumThreadCount: 4_096,
+        qualifiedIndirectKernelNames: [],
         attachStableResidencySetToQueue: true,
         requestResidencyAheadOfExecution: true,
-        enableExplicitBarrierValidation: true,
+        validateBarrierPlan: true,
         requireQualificationBeforePerformanceMode: true,
         pipelineArchivePath: nil
     )
@@ -25,16 +25,16 @@ public extension Metal4ExecutionConfiguration {
     /// worklist kernels have a verified indirect argument layout.
     static let phase3PerformanceCandidate = Self(
         requirement: .required,
+        commandBufferPoolSize: 4,
+        maximumBufferBindingCount: 31,
         batchingMode: .boundedDispatchGroups,
-        indirectDispatchPolicy: .qualifiedAutomatic,
-        commandBufferSlotCount: 4,
-        maximumBufferBindingCount: 32,
         maximumDispatchesPerGroup: 16_384,
-        directDispatchThreshold: 4_096,
-        qualifiedIndirectKernels: [],
+        indirectDispatchMode: .qualifiedAutomatic,
+        indirectDispatchMinimumThreadCount: 4_096,
+        qualifiedIndirectKernelNames: [],
         attachStableResidencySetToQueue: true,
         requestResidencyAheadOfExecution: true,
-        enableExplicitBarrierValidation: true,
+        validateBarrierPlan: true,
         requireQualificationBeforePerformanceMode: true,
         pipelineArchivePath: nil
     )
@@ -45,7 +45,7 @@ public extension Metal4ExecutionConfiguration {
 
     func validatedForMetal4Backend() throws -> Self {
         let value = try validated()
-        let requested = Set(value.qualifiedIndirectKernels)
+        let requested = Set(value.qualifiedIndirectKernelNames)
         let unsupported = requested.subtracting(
             Metal4IndirectDispatchCatalog.supportedKernelNames
         )
@@ -54,7 +54,7 @@ public extension Metal4ExecutionConfiguration {
                 unsupported.sorted()
             )
         }
-        if value.indirectDispatchPolicy == .disabled,
+        if value.indirectDispatchMode == .disabled,
            !requested.isEmpty {
             throw Metal4ExecutionPolicyError.indirectDisabledWithQualifiedKernels
         }

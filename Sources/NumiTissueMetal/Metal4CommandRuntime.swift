@@ -293,11 +293,15 @@ public final class Metal4RuntimeContext: @unchecked Sendable {
     public let configuration: Metal4ExecutionConfiguration
     public let commandPool: Metal4CommandPool
 
+    public var telemetry: Metal4SubmissionTelemetryRecorder {
+        commandPool.telemetry
+    }
+
     public init(
         device requestedDevice: MTLDevice? = nil,
         configuration source: Metal4ExecutionConfiguration = .init()
     ) throws {
-        let configuration = try source.validated()
+        let configuration = try source.validatedForMetal4Backend()
         guard let device = requestedDevice ?? MTLCreateSystemDefaultDevice() else {
             throw Metal4CommandRuntimeError.noDevice
         }
@@ -312,7 +316,6 @@ public final class Metal4RuntimeContext: @unchecked Sendable {
             device: device,
             capacity: configuration.commandBufferPoolSize
         )
-        queue.label = "NumiTissue.Metal4.Compute"
     }
 
     public func beginUnifiedComputePass() throws -> Metal4CommandLease {

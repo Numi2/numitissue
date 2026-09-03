@@ -68,7 +68,7 @@ public actor Metal4TissueBackend: InterventionAwareTissueBackend, AdaptiveFideli
         molecularProgram: MetalMolecularProgram = MetalMolecularProgram(),
         qualificationReport: Metal4QualificationReport? = nil
     ) throws {
-        let configuration = try sourceConfiguration.validated()
+        let configuration = try sourceConfiguration.validatedForMetal4Backend()
         guard configuration.requirement != .disabled else {
             throw Metal4BackendError.disabledByConfiguration
         }
@@ -95,7 +95,7 @@ public actor Metal4TissueBackend: InterventionAwareTissueBackend, AdaptiveFideli
         )
         let tableCache = try Metal4ArgumentTableCache(
             device: classicContext.device,
-            maximumBufferBindingCount: configuration.maximumBufferBindingCount
+            maximumBindingCount: configuration.maximumBufferBindingCount
         )
         let stable = Metal4ResidencyController(
             device: classicContext.device,

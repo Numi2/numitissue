@@ -52,7 +52,7 @@ public struct Metal4ExecutionConfiguration: Sendable, Hashable, Codable {
     public init(
         requirement: Metal4BackendRequirement = .preferred,
         commandBufferPoolSize: Int = 3,
-        maximumBufferBindingCount: Int = 32,
+        maximumBufferBindingCount: Int = 31,
         batchingMode: Metal4BatchingMode = .unifiedTransaction,
         maximumDispatchesPerGroup: Int = 2_048,
         indirectDispatchMode: Metal4IndirectDispatchMode = .qualifiedAutomatic,
@@ -92,7 +92,7 @@ public struct Metal4ExecutionConfiguration: Sendable, Hashable, Codable {
         guard (1...64).contains(commandBufferPoolSize) else {
             throw Metal4ContractError.invalidCommandBufferPoolSize(commandBufferPoolSize)
         }
-        guard (1...256).contains(maximumBufferBindingCount) else {
+        guard (1...31).contains(maximumBufferBindingCount) else {
             throw Metal4ContractError.invalidBindingCount(maximumBufferBindingCount)
         }
         guard (1...1_000_000).contains(maximumDispatchesPerGroup) else {
@@ -607,7 +607,7 @@ public enum Metal4DispatchPlanner {
         specialization: Metal4KernelSpecialization = .init(),
         configuration source: Metal4ExecutionConfiguration
     ) throws -> Metal4DispatchDecision {
-        let configuration = try source.validated()
+        let configuration = try source.validatedForMetal4Backend()
         guard threadCount >= 0 else {
             throw Metal4ContractError.negativeThreadCount(threadCount)
         }
@@ -694,7 +694,7 @@ public enum Metal4ContractError: Error, Sendable, CustomStringConvertible {
         case .invalidCommandBufferPoolSize(let value):
             return "Metal 4 command-buffer pool size \(value) is outside 1...64"
         case .invalidBindingCount(let value):
-            return "Metal 4 buffer-binding count \(value) is outside 1...256"
+            return "Metal 4 buffer-binding count \(value) is outside 1...31"
         case .invalidDispatchGroupLimit(let value):
             return "Metal 4 dispatch group limit \(value) is outside 1...1000000"
         case .invalidIndirectThreshold(let value):

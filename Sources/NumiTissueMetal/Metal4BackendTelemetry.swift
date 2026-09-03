@@ -12,8 +12,11 @@ extension Metal4TissueBackend: RuntimeTelemetryProvidingBackend {
             options: options
         )
         let unified = metal4Context.telemetry.snapshot()
+        let unifiedGPUSeconds: Double? = unified.completedSubmissions > 0
+            ? unified.accumulatedGPUSeconds
+            : nil
         let gpuSeconds: Double?
-        switch (classic.accumulatedGPUSeconds, unified.accumulatedGPUSeconds) {
+        switch (classic.accumulatedGPUSeconds, unifiedGPUSeconds) {
         case (.none, .none):
             gpuSeconds = nil
         case (.some(let lhs), .none):
@@ -42,7 +45,7 @@ extension Metal4TissueBackend: RuntimeTelemetryProvidingBackend {
         )
         if let residency = lastStableResidencySnapshot {
             counters["metal4.stableResidencyBytes"] = Double(
-                residency.allocatedSize
+                residency.allocatedBytes
             )
             counters["metal4.stableResidencyAllocations"] = Double(
                 residency.allocationCount
@@ -53,17 +56,15 @@ extension Metal4TissueBackend: RuntimeTelemetryProvidingBackend {
         metadata["metal.api"] = "4"
         metadata["metal4.requirement"] = metal4Configuration.requirement.rawValue
         metadata["metal4.batchingMode"] = metal4Configuration.batchingMode.rawValue
-        metadata["metal4.indirectPolicy"] = metal4Configuration.indirectDispatchPolicy.rawValue
+        metadata["metal4.indirectPolicy"] = metal4Configuration.indirectDispatchMode.rawValue
         metadata["metal4.pipelineArchive"] = metal4Configuration.pipelineArchivePath ?? "none"
         metadata["metal4.commandSlots"] = String(
-            metal4Configuration.commandBufferSlotCount
+            metal4Configuration.commandBufferPoolSize
         )
         metadata["metal4.cachedArgumentTables"] = String(
             argumentTableCache.cachedTableCount
         )
-        metadata["metal4.supportReasons"] = supportReport.reasons.joined(
-            separator: ";"
-        )
+        metadata["metal4.supportReason"] = supportReport.reason ?? "none"
         metadata["metal4.qualification"] = qualificationReport?.promotionApproved == true
             ? "approved"
             : "not-supplied"
@@ -98,9 +99,9 @@ extension Metal4TissueBackend: RuntimeTelemetryProvidingBackend {
             blitEncoders: classic.blitEncoders,
             dispatches: classic.dispatches &+ unified.dispatches,
             completedCommandBuffers: classic.completedCommandBuffers &+
-                unified.completedCommandBuffers,
+                unified.completedSubmissions,
             failedCommandBuffers: classic.failedCommandBuffers &+
-                unified.failedCommandBuffers,
+                unified.failedSubmissions,
             accumulatedGPUSeconds: gpuSeconds,
             energyJoules: nil,
             hardwareCounters: counters,

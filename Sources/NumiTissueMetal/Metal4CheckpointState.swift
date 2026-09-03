@@ -35,7 +35,7 @@ private struct Metal4BackendCheckpointPayload: Sendable, Codable {
             throw Metal4CheckpointError.stateMismatch
         }
         _ = try eventWheel.validated()
-        _ = try metal4Configuration.validated()
+        _ = try metal4Configuration.validatedForMetal4Backend()
         return self
     }
 }
@@ -65,8 +65,8 @@ extension Metal4TissueBackend: RuntimeBackendCheckpointStateProvider {
         }
         guard valid.metal4Configuration.batchingMode ==
                 metal4Configuration.batchingMode,
-              valid.metal4Configuration.indirectDispatchPolicy ==
-                metal4Configuration.indirectDispatchPolicy else {
+              valid.metal4Configuration.indirectDispatchMode ==
+                metal4Configuration.indirectDispatchMode else {
             throw Metal4CheckpointError.executionConfigurationMismatch
         }
     }

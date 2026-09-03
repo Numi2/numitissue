@@ -227,7 +227,7 @@ extension Metal4TissueBackend {
         requiredCommands: Int
     ) async throws {
         guard requiredCommands > 0 else { return }
-        guard let session else {
+        guard let session = encodingSession else {
             throw MetalRuntimeError.noOpenTransaction
         }
         let projected = session.statistics.commandCount
@@ -460,7 +460,7 @@ extension Metal4TissueBackend {
                 activeOverlayBuffers.parameters
             ])
         }
-        transactionResidency.clear()
+        transactionResidency.detach()
         currentContext = nil
         currentInput = nil
         encodingSession = nil

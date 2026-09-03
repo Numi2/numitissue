@@ -466,11 +466,8 @@ extension Metal4TissueBackend {
             fieldStencil: header.fieldGridWidth,
             molecularSolver: molecularSolver,
             fidelityLevel: fidelity,
-            flags: UInt32(truncatingIfNeeded:
-                deterministicFamilyKey(
-                    seed: 0x4B45_524E,
-                    values: [UInt64(kernel.rawValue.utf8.count)]
-                )
+            precisionClass: UInt32(
+                options.effectiveNumericalProfile == .reference64 ? 64 : 32
             )
         )
     }

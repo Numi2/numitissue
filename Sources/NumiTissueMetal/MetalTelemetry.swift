@@ -25,19 +25,23 @@ public final class MetalTelemetryRecorder: @unchecked Sendable {
     public init() {}
 
     public func recordPrivateAllocation(bytes: Int) {
-        updateCounter(bytes, target: &allocatedPrivateBytes)
+        guard bytes > 0 else { return }
+        lock.withLock { allocatedPrivateBytes &+= UInt64(bytes) }
     }
 
     public func recordSharedAllocation(bytes: Int) {
-        updateCounter(bytes, target: &allocatedSharedBytes)
+        guard bytes > 0 else { return }
+        lock.withLock { allocatedSharedBytes &+= UInt64(bytes) }
     }
 
     public func recordUpload(bytes: Int) {
-        updateCounter(bytes, target: &hostToDeviceBytes)
+        guard bytes > 0 else { return }
+        lock.withLock { hostToDeviceBytes &+= UInt64(bytes) }
     }
 
     public func recordReadback(bytes: Int) {
-        updateCounter(bytes, target: &deviceToHostBytes)
+        guard bytes > 0 else { return }
+        lock.withLock { deviceToHostBytes &+= UInt64(bytes) }
     }
 
     public func recordComputeCommandBuffer() {
@@ -114,6 +118,10 @@ public final class MetalTelemetryRecorder: @unchecked Sendable {
                 metadata: [
                     "counterSampling.requested": String(options.enableCounterSampling),
                     "counterSampling.availableSets": capabilities.counterSetNames.joined(separator: ","),
+                    "counterSampling.values": hardwareCounters.isEmpty
+                        ? "not-sampled"
+                        : "measured",
+                    "encoderDispatchInstrumentation": "partial",
                     "energy.measurement": "not-provided",
                     "hazardMode": String(describing: options.hazardMode),
                     "mathProfile": numericalProfile.rawValue
@@ -139,11 +147,6 @@ public final class MetalTelemetryRecorder: @unchecked Sendable {
             timedCommandBuffers = 0
             hardwareCounters.removeAll(keepingCapacity: true)
         }
-    }
-
-    private func updateCounter(_ bytes: Int, target: inout UInt64) {
-        guard bytes > 0 else { return }
-        lock.withLock { target &+= UInt64(bytes) }
     }
 }
 

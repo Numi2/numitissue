@@ -18,6 +18,9 @@ public struct MetalExecutionOptions: Sendable, Hashable, Codable {
     public var enableShaderValidation: Bool
     public var retainShaderSource: Bool
     public var maximumThreadgroupMemoryBytes: Int
+    /// Optional for backward-compatible decoding of existing option documents. A nil value keeps
+    /// the historical fast-math production behavior; scientific callers must request a profile.
+    public var requestedNumericalProfile: RuntimeNumericalProfile?
 
     public init(
         inFlightTransactions: Int = 2,
@@ -27,7 +30,8 @@ public struct MetalExecutionOptions: Sendable, Hashable, Codable {
         enableCounterSampling: Bool = false,
         enableShaderValidation: Bool = true,
         retainShaderSource: Bool = false,
-        maximumThreadgroupMemoryBytes: Int = 32 * 1_024
+        maximumThreadgroupMemoryBytes: Int = 32 * 1_024,
+        requestedNumericalProfile: RuntimeNumericalProfile? = nil
     ) {
         precondition(inFlightTransactions > 0)
         precondition(privateHeapBytes > 0)
@@ -40,6 +44,11 @@ public struct MetalExecutionOptions: Sendable, Hashable, Codable {
         self.enableShaderValidation = enableShaderValidation
         self.retainShaderSource = retainShaderSource
         self.maximumThreadgroupMemoryBytes = maximumThreadgroupMemoryBytes
+        self.requestedNumericalProfile = requestedNumericalProfile
+    }
+
+    public var effectiveNumericalProfile: RuntimeNumericalProfile {
+        requestedNumericalProfile ?? .performance32
     }
 }
 

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<neuroml xmlns="http://www.neuroml.org/schema/neuroml2" id="phase4_neuroml">
+  <include href="phase4-channels.xml"/>
+  <cell id="phase4_cell">
+    <morphology id="phase4_morphology">
+      <segment id="0" name="soma">
+        <proximal x="0" y="0" z="0" diameter="10"/>
+        <distal x="0" y="10" z="0" diameter="10"/>
+      </segment>
+      <segment id="1" name="dendrite">
+        <parent segment="0" fractionAlong="1"/>
+        <distal x="0" y="30" z="0" diameter="2"/>
+      </segment>
+      <segmentGroup id="soma_group">
+        <member segment="0"/>
+      </segmentGroup>
+      <segmentGroup id="dendrite_group">
+        <member segment="1"/>
+      </segmentGroup>
+    </morphology>
+    <biophysicalProperties id="phase4_biophysics">
+      <membraneProperties>
+        <specificCapacitance value="1 uF_per_cm2"/>
+        <channelDensity id="phase4_pas" ionChannel="pas" ion="non_specific" condDensity="0.1 mS_per_cm2" erev="-65 mV" segmentGroup="dendrite_group"/>
+      </membraneProperties>
+      <intracellularProperties>
+        <resistivity value="100 ohm_cm"/>
+      </intracellularProperties>
+    </biophysicalProperties>
+  </cell>
+</neuroml>

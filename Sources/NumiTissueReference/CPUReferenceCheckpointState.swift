@@ -30,6 +30,19 @@ extension CPUReferenceTissueBackend: RuntimeBackendCheckpointStateProvider {
         "numitissue.reference.cpu"
     }
 
+    public func validateBackendCheckpointState(
+        _ data: Data,
+        committedState: TissueRuntimeState
+    ) async throws {
+        let payload = try Self.decodeCheckpointState(data)
+        guard payload.eventWheel.originTick == committedState.time.tick else {
+            throw CPUReferenceBackendError.eventWheelStateMismatch(
+                wheel: payload.eventWheel.originTick,
+                committed: committedState.time.tick
+            )
+        }
+    }
+
     public func exportBackendCheckpointState() async throws -> Data {
         let snapshot = try await exportEventWheelSnapshot()
         let payload = try CPUReferenceCheckpointState(
@@ -47,13 +60,19 @@ extension CPUReferenceTissueBackend: RuntimeBackendCheckpointStateProvider {
     }
 
     public func restoreBackendCheckpointState(_ data: Data) async throws {
-        let payload = try RuntimeBackendCheckpointArchive.decode(
+        let payload = try Self.decodeCheckpointState(data)
+        try await restoreEventWheelSnapshot(payload.eventWheel)
+    }
+
+    private nonisolated static func decodeCheckpointState(
+        _ data: Data
+    ) throws -> CPUReferenceCheckpointState {
+        try RuntimeBackendCheckpointArchive.decode(
             CPUReferenceCheckpointState.self,
             from: data,
-            expectedBackendIdentifier: checkpointBackendIdentifier,
+            expectedBackendIdentifier: "numitissue.reference.cpu",
             expectedPayloadVersion: 1
         ).validated()
-        try await restoreEventWheelSnapshot(payload.eventWheel)
     }
 }
 

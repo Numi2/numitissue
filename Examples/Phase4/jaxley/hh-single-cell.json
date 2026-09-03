@@ -1,0 +1,22 @@
+{
+  "model": "hh-single-cell",
+  "parameters": {
+    "HH_gK": 0.036,
+    "HH_gLeak": 0.0003,
+    "HH_gNa": 0.12
+  },
+  "schemaVersion": 1,
+  "simulation": {
+    "deltaTMilliseconds": 0.025,
+    "durationMilliseconds": 20.0,
+    "enableX64": false,
+    "platform": "cpu",
+    "solver": "bwd_euler",
+    "voltageSolver": "jaxley.dhs"
+  },
+  "stimulus": {
+    "amplitudeNanoamps": 0.1,
+    "delayMilliseconds": 5.0,
+    "durationMilliseconds": 2.0
+  }
+}

@@ -342,14 +342,14 @@ public extension RuntimeInputFrame {
             hash ^= UInt64(value.bitPattern)
             hash &*= 0x0000_0100_0000_01b3
         }
-        for value in boundary.deformationGradient { mix(value) }
-        for value in boundary.strain { mix(value) }
-        for value in boundary.stress { mix(value) }
+        for index in 0..<16 { mix(boundary.deformationGradient[index]) }
+        for index in 0..<6 { mix(boundary.strain[index]) }
+        for index in 0..<6 { mix(boundary.stress[index]) }
         mix(boundary.pressure)
         mix(boundary.damage)
         mix(boundary.temperatureKelvin)
-        for value in boundary.boundaryVelocity { mix(value) }
-        for value in boundary.worldTransform { mix(value) }
+        for index in 0..<3 { mix(boundary.boundaryVelocity[index]) }
+        for index in 0..<16 { mix(boundary.worldTransform[index]) }
         return hash
     }
 }

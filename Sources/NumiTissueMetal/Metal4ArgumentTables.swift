@@ -27,6 +27,16 @@ private struct Metal4ArgumentTableKey: Hashable {
     var bindings: [Metal4AddressBindingKey]
 }
 
+@available(macOS 26.0, iOS 26.0, macCatalyst 26.0, tvOS 26.0, visionOS 26.0, *)
+private struct Metal4AddressRange {
+    var lowerBound: UInt64
+    var upperBound: UInt64
+
+    func contains(_ address: UInt64) -> Bool {
+        address >= lowerBound && address < upperBound
+    }
+}
+
 /// Retains both the Metal 4 argument table and every buffer whose GPU address it contains.
 @available(macOS 26.0, iOS 26.0, macCatalyst 26.0, tvOS 26.0, visionOS 26.0, *)
 public final class Metal4ArgumentTableEntry: @unchecked Sendable {
@@ -154,6 +164,32 @@ public final class Metal4ArgumentTableCache: @unchecked Sendable {
         withLock {
             entries.removeAll(keepingCapacity: true)
             generation &+= 1
+        }
+    }
+
+    /// Removes only tables that contain an address into one of the supplied buffers. Stable state,
+    /// model, and parameter tables remain cached when transaction-local overlay storage is released.
+    @discardableResult
+    public func invalidate(referencing buffers: [MTLBuffer]) -> Int {
+        guard !buffers.isEmpty else { return 0 }
+        let ranges = buffers.map { buffer -> Metal4AddressRange in
+            let lower = UInt64(buffer.gpuAddress)
+            let length = UInt64(max(buffer.length, 1))
+            let upper = lower.addingReportingOverflow(length)
+            return Metal4AddressRange(
+                lowerBound: lower,
+                upperBound: upper.overflow ? UInt64.max : upper.partialValue
+            )
+        }
+        return withLock {
+            let keys = entries.keys.filter { key in
+                key.bindings.contains { binding in
+                    ranges.contains { $0.contains(binding.address) }
+                }
+            }
+            for key in keys { entries.removeValue(forKey: key) }
+            if !keys.isEmpty { generation &+= 1 }
+            return keys.count
         }
     }
 

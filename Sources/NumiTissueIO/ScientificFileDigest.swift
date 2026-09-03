@@ -49,10 +49,14 @@ public enum ScientificFileDigester {
                         actual: byteCount
                     )
                 }
-                digest.update(data)
+                try digest.update(data)
             }
         } catch let error as ScientificFileDigestError {
             throw error
+        } catch let error as IncrementalSHA256Error {
+            throw ScientificFileDigestError.internalDigestFailure(
+                error.description
+            )
         } catch {
             throw ScientificFileDigestError.readFailed(
                 path: url.path,
@@ -60,10 +64,16 @@ public enum ScientificFileDigester {
             )
         }
 
-        return ScientificFileDigestResult(
-            sha256: ScientificSHA256Digest(bytes: digest.finalize()),
-            byteCount: byteCount
-        )
+        do {
+            return ScientificFileDigestResult(
+                sha256: ScientificSHA256Digest(bytes: try digest.finalize()),
+                byteCount: byteCount
+            )
+        } catch let error as IncrementalSHA256Error {
+            throw ScientificFileDigestError.internalDigestFailure(
+                error.description
+            )
+        }
     }
 }
 
@@ -73,6 +83,7 @@ public enum ScientificFileDigestError: Error, Sendable, CustomStringConvertible 
     case readFailed(path: String, reason: String)
     case byteCountOverflow
     case maximumBytesExceeded(maximum: UInt64, actual: UInt64)
+    case internalDigestFailure(String)
 
     public var description: String {
         switch self {
@@ -86,6 +97,25 @@ public enum ScientificFileDigestError: Error, Sendable, CustomStringConvertible 
             return "Scientific file byte count overflowed UInt64."
         case .maximumBytesExceeded(let maximum, let actual):
             return "Scientific file has \(actual) bytes, above the \(maximum)-byte verification bound."
+        case .internalDigestFailure(let reason):
+            return "Scientific SHA-256 state is invalid: \(reason)"
+        }
+    }
+}
+
+private enum IncrementalSHA256Error: Error, CustomStringConvertible {
+    case byteCountOverflow
+    case invalidBlockLength(Int)
+    case invalidFinalState(Int)
+
+    var description: String {
+        switch self {
+        case .byteCountOverflow:
+            return "input byte count overflowed UInt64"
+        case .invalidBlockLength(let count):
+            return "SHA-256 block contains \(count) bytes instead of 64"
+        case .invalidFinalState(let count):
+            return "SHA-256 final pending state contains \(count) bytes"
         }
     }
 }
@@ -118,18 +148,31 @@ private struct IncrementalSHA256 {
     private var state = Self.initial
     private var pending = Data()
     private var totalBytes: UInt64 = 0
+    private var finalized = false
 
-    mutating func update(_ data: Data) {
+    mutating func update(_ data: Data) throws {
+        guard !finalized else {
+            throw IncrementalSHA256Error.invalidFinalState(pending.count)
+        }
         guard !data.isEmpty else { return }
-        totalBytes &+= UInt64(data.count)
+        let addition = totalBytes.addingReportingOverflow(UInt64(data.count))
+        guard !addition.overflow else {
+            throw IncrementalSHA256Error.byteCountOverflow
+        }
+        totalBytes = addition.partialValue
         pending.append(data)
         while pending.count >= 64 {
-            process(pending.prefix(64))
+            let block = Data(pending.prefix(64))
+            try process(block)
             pending.removeFirst(64)
         }
     }
 
-    mutating func finalize() -> [UInt8] {
+    mutating func finalize() throws -> [UInt8] {
+        guard !finalized else {
+            throw IncrementalSHA256Error.invalidFinalState(pending.count)
+        }
+        finalized = true
         let bitLength = totalBytes &* 8
         pending.append(0x80)
         while pending.count % 64 != 56 {
@@ -140,30 +183,38 @@ private struct IncrementalSHA256 {
             pending.append(contentsOf: $0)
         }
         while pending.count >= 64 {
-            process(pending.prefix(64))
+            let block = Data(pending.prefix(64))
+            try process(block)
             pending.removeFirst(64)
+        }
+        guard pending.isEmpty else {
+            throw IncrementalSHA256Error.invalidFinalState(pending.count)
         }
 
         var output: [UInt8] = []
         output.reserveCapacity(32)
         for word in state {
-            let bigEndian = word.bigEndian
-            withUnsafeBytes(of: bigEndian) {
+            var bigEndian = word.bigEndian
+            withUnsafeBytes(of: &bigEndian) {
                 output.append(contentsOf: $0)
             }
         }
         return output
     }
 
-    private mutating func process(_ block: Data.SubSequence) {
+    private mutating func process(_ block: Data) throws {
+        guard block.count == 64 else {
+            throw IncrementalSHA256Error.invalidBlockLength(block.count)
+        }
+        let bytes = [UInt8](block)
         var schedule = Array(repeating: UInt32(0), count: 64)
         for index in 0..<16 {
             let base = index * 4
             schedule[index] =
-                UInt32(block[base]) << 24 |
-                UInt32(block[base + 1]) << 16 |
-                UInt32(block[base + 2]) << 8 |
-                UInt32(block[base + 3])
+                UInt32(bytes[base]) << 24 |
+                UInt32(bytes[base + 1]) << 16 |
+                UInt32(bytes[base + 2]) << 8 |
+                UInt32(bytes[base + 3])
         }
         for index in 16..<64 {
             let s0 = Self.rotateRight(schedule[index - 15], by: 7) ^

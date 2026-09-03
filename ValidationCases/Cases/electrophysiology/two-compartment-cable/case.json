@@ -1,0 +1,21 @@
+{
+  "schemaVersion":1,
+  "id":"electrophysiology.two-compartment-cable",
+  "title":"Two-compartment implicit cable solve",
+  "summary":"Checks parent and child axial assembly, tree elimination, and back substitution against the direct two-by-two matrix solution.",
+  "domain":"electrophysiology",
+  "tier":"analytical",
+  "deterministic":true,
+  "modelPath":"model.json",
+  "inputPath":"input.json",
+  "reference":{"kind":"analytical","engine":"direct symmetric two-by-two solve","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"Backward-Euler compartment matrix with off-diagonal axial conductance","metadata":{}},
+  "criteria":[
+    {"id":"root-voltage","observable":"compartment.root.voltage","unit":"mV","comparison":"scalar","absoluteTolerance":1e-5,"relativeTolerance":1e-7,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"child-voltage","observable":"compartment.child.voltage","unit":"mV","comparison":"scalar","absoluteTolerance":1e-5,"relativeTolerance":1e-7,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"cycle-rejection","observable":"compartment.topology","unit":"boolean","comparison":"topologyInvariant","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{"predicate":"rooted-acyclic-forest"}}
+  ],
+  "tags":["analytical","cable-equation","deterministic","phase-1","tree-solver"],
+  "requiredProfiles":["scientific"],
+  "randomSeeds":[],
+  "metadata":{"assembly":"all-incident-axial-conductances"}
+}

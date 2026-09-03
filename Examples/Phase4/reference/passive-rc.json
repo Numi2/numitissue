@@ -1,0 +1,17 @@
+{
+  "capacitanceNanofarads": 1.0,
+  "currentIntervals": [
+    {
+      "currentNanoamps": 0.1,
+      "endMilliseconds": 30.0,
+      "startMilliseconds": 10.0
+    }
+  ],
+  "deltaTMilliseconds": 0.1,
+  "durationMilliseconds": 50.0,
+  "initialVoltageMillivolts": -65.0,
+  "model": "passive-rc",
+  "resistanceMegaohms": 100.0,
+  "restingVoltageMillivolts": -65.0,
+  "schemaVersion": 1
+}

@@ -96,23 +96,22 @@ public struct ModelDBDatasetAdapter: BiologicalDatasetAdapter {
                         role: "modeldb-model",
                         ordinal: ordinal
                     ),
-                    locator: .modelDB(
-                        accession: accession,
-                        path: selection.metadataPredicates["modeldb.path"]
-                    ),
+                    locator: .modelDB(accession: accession, path: nil),
                     headers: ["Accept": "application/json"],
                     decoderID: configuration.metadataDecoderID,
                     expectedEncoding: .json,
                     expectedMediaType: "application/json",
                     priority: .high,
-                    cachePolicy: dataset.stability == .mutableLatest ? .revalidate : .immutable,
+                    cachePolicy: dataset.stability == .mutableLatest
+                        ? .revalidate
+                        : .immutable,
                     metadata: BiologicalAdapterUtilities.canonicalMetadata(
                         source: source,
                         selection: selection,
-                        additional: [
-                            "numitissue.discovery-role": "model-record",
-                            "modeldb.accession": String(accession)
-                        ]
+                        additional: modelMetadata(
+                            accession: accession,
+                            selection: selection
+                        )
                     )
                 )
             }
@@ -130,6 +129,20 @@ public struct ModelDBDatasetAdapter: BiologicalDatasetAdapter {
         ).validated()
     }
 
+    private func modelMetadata(
+        accession: Int,
+        selection: DatasetSelection
+    ) -> [String: String] {
+        var metadata: [String: String] = [
+            "numitissue.discovery-role": "model-record",
+            "modeldb.accession": String(accession)
+        ]
+        if let path = selection.metadataPredicates["modeldb.path"] {
+            metadata["modeldb.requested-path"] = path
+        }
+        return metadata
+    }
+
     private func catalogRequest(
         planID: String,
         selection: DatasetSelection
@@ -137,7 +150,8 @@ public struct ModelDBDatasetAdapter: BiologicalDatasetAdapter {
         guard var components = URLComponents(string: configuration.apiBaseURL) else {
             throw BiologicalDatasetAdapterError.invalidAdapterConfiguration(adapterID)
         }
-        components.path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components.path = components.path
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         components.path = "/" + components.path + "/models"
         var queryItems: [URLQueryItem] = []
         for key in selection.metadataPredicates.keys.sorted()

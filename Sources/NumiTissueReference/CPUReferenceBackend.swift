@@ -3,7 +3,7 @@ import NumiTissueCore
 import NumiTissueModels
 import NumiTissueRuntime
 
-/// Deterministic double-precision-oriented semantic reference. It is not intended for throughput;
+/// Deterministic correctness-oriented FP32 semantic reference. It is not intended for throughput;
 /// every production Metal kernel is expected to match this backend on bounded validation models.
 public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
     nonisolated public let name = "NumiTissue CPU Reference"
@@ -372,7 +372,7 @@ extension CPUReferenceTissueBackend: InterventionAwareTissueBackend {
 }
 
 extension CPUReferenceTissueBackend: RuntimePhaseInspectableBackend {
-    nonisolated public var numericalProfile: RuntimeNumericalProfile { .reference64 }
+    nonisolated public var numericalProfile: RuntimeNumericalProfile { .scientific32 }
 
     public func captureShadowDigest(
         phase: RuntimePhase,
@@ -423,7 +423,8 @@ extension CPUReferenceTissueBackend: RuntimePhaseInspectableBackend {
             metadata: [
                 "eventWheel.currentTick": String(wheel.currentTick),
                 "eventWheel.horizonEndTick": String(wheel.horizonEndTick),
-                "inspection.readback": "none"
+                "inspection.readback": "none",
+                "precision.authoritativeState": "fp32"
             ]
         )
     }

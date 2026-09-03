@@ -1,0 +1,2 @@
+node_type_id,model_type,model_template,morphology
+1,biophysical,nrn:phase4_cell,minimal.swc

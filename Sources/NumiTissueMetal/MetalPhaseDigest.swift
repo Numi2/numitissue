@@ -120,4 +120,134 @@ final class MetalPhaseDigestBuffers: @unchecked Sendable {
         )
     }
 }
+
+public struct MetalStateDigestResult: Sendable, Codable {
+    public var numericalProfile: RuntimeNumericalProfile
+    public var deviceName: String
+    public var deviceRegistryID: UInt64
+    public var stateCounts: RuntimeCapacity
+    public var pendingEventCount: Int
+    public var poolDigests: RuntimePoolDigests
+    public var telemetry: RuntimeBackendTelemetry
+
+    public init(
+        numericalProfile: RuntimeNumericalProfile,
+        deviceName: String,
+        deviceRegistryID: UInt64,
+        stateCounts: RuntimeCapacity,
+        pendingEventCount: Int,
+        poolDigests: RuntimePoolDigests,
+        telemetry: RuntimeBackendTelemetry
+    ) {
+        self.numericalProfile = numericalProfile
+        self.deviceName = deviceName
+        self.deviceRegistryID = deviceRegistryID
+        self.stateCounts = stateCounts
+        self.pendingEventCount = pendingEventCount
+        self.poolDigests = poolDigests
+        self.telemetry = telemetry
+    }
+}
+
+/// Standalone host/GPU digest validator. It deliberately owns an isolated arena so digest-kernel
+/// validation cannot modify a production transaction or depend on backend-private state.
+public actor MetalStateDigestEngine {
+    public let context: MetalDeviceContext
+    public let numericalProfile: RuntimeNumericalProfile
+
+    private let library: MetalShaderLibrary
+    private let digestBuffers: MetalPhaseDigestBuffers
+
+    public init(
+        device: MTLDevice? = nil,
+        options sourceOptions: MetalExecutionOptions = MetalExecutionOptions(
+            privateHeapBytes: 128 * 1_024 * 1_024,
+            stagingBytes: 8 * 1_024 * 1_024,
+            requestedNumericalProfile: .scientific32
+        )
+    ) async throws {
+        var options = sourceOptions
+        if options.requestedNumericalProfile == nil {
+            options.requestedNumericalProfile = .scientific32
+        }
+        let context = try MetalDeviceContext(device: device, options: options)
+        let library = try await MetalShaderLibrary(context: context)
+        _ = try library.pipeline(.digestShadowState)
+        self.context = context
+        self.numericalProfile = options.effectiveNumericalProfile
+        self.library = library
+        self.digestBuffers = try MetalPhaseDigestBuffers(context: context)
+    }
+
+    public func digest(
+        state sourceState: TissueRuntimeState,
+        pendingEvents: [RuntimePendingEvent] = []
+    ) async throws -> MetalStateDigestResult {
+        var state = sourceState
+        state.reserveCapacity(state.capacity)
+        try state.validateCapacity()
+        let arena = try MetalStateArena(context: context, initialState: state)
+        try await arena.uploadInitialState(state)
+        let argumentTable = try MetalArgumentTable(
+            context: context,
+            shaderLibrary: library,
+            state: arena.shadow,
+            transient: arena.transient,
+            label: "NumiTissue.differential.standalone.arguments"
+        )
+        let execution = ExecutionContext(
+            transaction: TransactionID(rawValue: 0),
+            epoch: state.epoch,
+            startTime: state.time,
+            randomSeed: 0,
+            cadence: RuntimeCadence()
+        )
+        arena.updateHeader(MetalSimulationHeader(
+            state: state,
+            context: execution,
+            phase: .validate,
+            phaseRange: state.time.tick..<state.time.tick
+        ))
+
+        let before = context.telemetry.snapshot(
+            backendName: "NumiTissue Metal State Digest",
+            numericalProfile: numericalProfile,
+            capabilities: context.capabilities,
+            options: context.options
+        )
+        let command = try context.makeCommandBuffer(
+            label: "NumiTissue.differential.standalone"
+        )
+        try digestBuffers.encode(
+            command: command,
+            library: library,
+            argumentTable: argumentTable,
+            state: arena.shadow,
+            transient: arena.transient,
+            stateTemplate: state
+        )
+        try await context.awaitCompletion(MetalCommandBufferHandle(command))
+        let poolDigests = digestBuffers.read(
+            metadata: RuntimeStateDigestBuilder.metadataDigest(state: state),
+            pendingEvents: RuntimeStateDigestBuilder.pendingEventsDigest(
+                pendingEvents
+            )
+        )
+        let after = context.telemetry.snapshot(
+            backendName: "NumiTissue Metal State Digest",
+            numericalProfile: numericalProfile,
+            capabilities: context.capabilities,
+            options: context.options
+        )
+        return MetalStateDigestResult(
+            numericalProfile: numericalProfile,
+            deviceName: context.capabilities.name,
+            deviceRegistryID: context.capabilities.registryID,
+            stateCounts: state.counts,
+            pendingEventCount: pendingEvents.count,
+            poolDigests: poolDigests,
+            telemetry: after.delta(from: before)
+        )
+    }
+}
 #endif

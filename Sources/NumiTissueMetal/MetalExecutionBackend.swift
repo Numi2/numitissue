@@ -12,9 +12,9 @@ private final class MetalPhaseHeaderRing: @unchecked Sendable {
     private(set) var count: Int = 0
 
     init(context: MetalDeviceContext, capacity: Int = 2_048) throws {
-        self.stride = MetalTissueABI.alignment
+        stride = MetalTissueABI.alignment
         self.capacity = capacity
-        self.buffer = try context.makeSharedBuffer(
+        buffer = try context.makeSharedBuffer(
             length: capacity * stride,
             label: "NumiTissue.phaseHeaders",
             writeCombined: true
@@ -24,12 +24,17 @@ private final class MetalPhaseHeaderRing: @unchecked Sendable {
     func reset() { count = 0 }
 
     func append(_ header: MetalSimulationHeader) throws -> Int {
-        guard count < capacity else { throw MetalRuntimeError.capacityExceeded("phase header ring") }
+        guard count < capacity else {
+            throw MetalRuntimeError.capacityExceeded("phase header ring")
+        }
         let offset = count * stride
         memset(buffer.contents().advanced(by: offset), 0, stride)
         withUnsafeBytes(of: header) { bytes in
             guard let base = bytes.baseAddress else { return }
-            buffer.contents().advanced(by: offset).copyMemory(from: base, byteCount: bytes.count)
+            buffer.contents().advanced(by: offset).copyMemory(
+                from: base,
+                byteCount: bytes.count
+            )
         }
         count += 1
         return offset
@@ -42,10 +47,11 @@ private struct StagedMetalOverlay: Sendable {
     var stateTemplate: TissueRuntimeState
 }
 
-/// Production Apple-Silicon backend. It records one complete 5 ms transaction into one Metal
-/// command buffer. Immutable model tables are reset into transaction-local effective tables,
-/// overlays are materialized once, and all kernels consume the resulting effective values.
-public actor MetalTissueBackend: InterventionAwareTissueBackend {
+/// Production Apple-Silicon backend. One complete 5 ms transaction is recorded into one Metal
+/// command buffer. Immutable model tables are copied to transaction-local effective tables,
+/// overlays are materialized once, and topology-changing fidelity migrations install a complete
+/// replacement arena only after GPU and conservation validation have succeeded.
+public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelityExecutionBackend {
     nonisolated public let name = "NumiTissue Metal"
     nonisolated public let capabilities: TissueRuntimeCapabilities
 
@@ -54,6 +60,8 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
 
     private let molecularProgram: MetalMolecularProgram
     private let overlayCompiler = RuntimeOverlayCompiler()
+    private let fidelityMigration = MetalFidelityMigrationCoordinator()
+
     private var shaderLibrary: MetalShaderLibrary?
     private var modelBuffers: MetalModelBuffers?
     private var biologyMetadata: MetalBiologyMetadataBuffers?
@@ -68,6 +76,9 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
     private var commandSubmitted = false
     private var stagedOverlay: StagedMetalOverlay?
     private var activeOverlayBuffers: MetalTransactionOverlayBuffers?
+    private var explicitFidelityPlanStaged = false
+    private var fidelityPreparationAttempted = false
+    private var retainedCounters: (transaction: TransactionID, value: RuntimeCounters)?
 
     public init(
         capabilities: TissueRuntimeCapabilities,
@@ -78,10 +89,13 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
         self.capabilities = capabilities
         self.options = options
         self.molecularProgram = molecularProgram
-        self.context = try MetalDeviceContext(device: device, options: options)
+        context = try MetalDeviceContext(device: device, options: options)
     }
 
-    public func load(model: CompiledTissueModel, initialState: TissueRuntimeState) async throws {
+    public func load(
+        model: CompiledTissueModel,
+        initialState: TissueRuntimeState
+    ) async throws {
         guard arena == nil else { throw RuntimeExecutionError.alreadyLoaded }
         var normalized = initialState
         normalized.reserveCapacity(normalized.capacity)
@@ -96,33 +110,29 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
             model: model,
             program: molecularProgram
         )
-        let biologyMetadata = try await MetalBiologyMetadataBuffers(context: context, model: model)
-        let ring = try MetalPhaseHeaderRing(context: context)
-        let committedTable = try MetalArgumentTable(
+        let biologyMetadata = try await MetalBiologyMetadataBuffers(
             context: context,
-            shaderLibrary: shaders,
-            state: arena.committed,
-            transient: arena.transient,
-            label: "NumiTissue.arguments.committed"
+            model: model
         )
-        let shadowTable = try MetalArgumentTable(
-            context: context,
-            shaderLibrary: shaders,
-            state: arena.shadow,
-            transient: arena.transient,
-            label: "NumiTissue.arguments.shadow"
+        let ring = try MetalPhaseHeaderRing(context: context)
+        let tables = try makeArgumentTables(
+            arena: arena,
+            shaders: shaders
         )
 
-        self.shaderLibrary = shaders
+        shaderLibrary = shaders
         self.modelBuffers = modelBuffers
         self.biologyMetadata = biologyMetadata
         self.arena = arena
-        self.phaseHeaderRing = ring
+        phaseHeaderRing = ring
         self.model = model
-        argumentTables[ObjectIdentifier(arena.committed)] = committedTable
-        argumentTables[ObjectIdentifier(arena.shadow)] = shadowTable
-        maxCableDepth = normalized.compartments.reduce(0) { max($0, ($1.flags >> 16) & 0xFF) }
-        try await clearPersistentTransientState(arena: arena, shaders: shaders, table: shadowTable)
+        argumentTables = tables
+        maxCableDepth = Self.cableDepth(in: normalized)
+        try await clearPersistentTransientState(
+            arena: arena,
+            shaders: shaders,
+            table: try shadowArgumentTable(in: tables, arena: arena)
+        )
     }
 
     public func stageInterventions(
@@ -130,7 +140,9 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
         context executionContext: ExecutionContext
     ) async throws {
         guard let arena, let model else { throw MetalRuntimeError.stateNotLoaded }
-        guard currentContext == nil else { throw RuntimeExecutionError.transactionInProgress }
+        guard currentContext == nil else {
+            throw RuntimeExecutionError.transactionInProgress
+        }
         guard frame.tick == executionContext.startTime.tick else {
             throw RuntimeOverlayError.staleFrame(
                 expected: executionContext.startTime.tick,
@@ -138,12 +150,34 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
             )
         }
         let currentState = try await arena.downloadCommittedState()
-        let compiled = try overlayCompiler.compile(frame: frame, state: currentState, model: model)
+        let compiled = try overlayCompiler.compile(
+            frame: frame,
+            state: currentState,
+            model: model
+        )
         stagedOverlay = StagedMetalOverlay(
             transaction: executionContext.transaction,
             overlay: compiled,
             stateTemplate: currentState
         )
+    }
+
+    public func stageFidelityDecisions(
+        _ decisions: [FidelityDecision],
+        context executionContext: ExecutionContext
+    ) async throws {
+        guard currentContext == nil else {
+            throw AdaptiveFidelityBackendError.transactionInProgress
+        }
+        try fidelityMigration.stage(
+            decisions,
+            transaction: executionContext.transaction
+        )
+        explicitFidelityPlanStaged = true
+    }
+
+    public func lastFidelityMigrationPlan() async -> FidelityMigrationPlan? {
+        fidelityMigration.lastPlan
     }
 
     public func beginShadowStep(
@@ -156,10 +190,14 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
               let ring = phaseHeaderRing else {
             throw MetalRuntimeError.stateNotLoaded
         }
-        guard currentContext == nil else { throw MetalRuntimeError.transactionAlreadyOpen }
-        if let stagedOverlay, stagedOverlay.transaction != executionContext.transaction {
+        guard currentContext == nil else {
+            throw MetalRuntimeError.transactionAlreadyOpen
+        }
+        if let stagedOverlay,
+           stagedOverlay.transaction != executionContext.transaction {
             throw RuntimeExecutionError.staleTransaction
         }
+        try fidelityMigration.assertStagedTransaction(executionContext.transaction)
 
         try await arena.copyCommittedToShadow()
         arena.transient.resetCPUVisible()
@@ -167,8 +205,12 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
         if let stagedOverlay {
             effectiveInput.stimuli.append(contentsOf: stagedOverlay.overlay.stimuli)
             effectiveInput.stimuli.sort {
-                if $0.startTick != $1.startTick { return $0.startTick < $1.startTick }
-                if $0.destination != $1.destination { return $0.destination < $1.destination }
+                if $0.startTick != $1.startTick {
+                    return $0.startTick < $1.startTick
+                }
+                if $0.destination != $1.destination {
+                    return $0.destination < $1.destination
+                }
                 return $0.kind < $1.kind
             }
         }
@@ -176,12 +218,17 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
             events: effectiveInput.afferentEvents,
             stimuli: effectiveInput.stimuli
         )
-        writeControlInput(effectiveInput, to: arena.transient.outputScalars)
+        writeControlInput(
+            effectiveInput,
+            to: arena.transient.outputScalars
+        )
 
         ring.reset()
         currentContext = executionContext
         currentInput = effectiveInput
         commandSubmitted = false
+        fidelityPreparationAttempted = false
+        retainedCounters = nil
         guard let command = context.commandQueue.makeCommandBuffer() else {
             clearOpenTransaction()
             throw MetalRuntimeError.commandBufferCreationFailed
@@ -611,11 +658,18 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
         }
     }
 
-    public func collectOutput(context executionContext: ExecutionContext) async throws -> RuntimeOutputFrame {
+    public func collectOutput(
+        context executionContext: ExecutionContext
+    ) async throws -> RuntimeOutputFrame {
         guard let arena else { throw MetalRuntimeError.stateNotLoaded }
         try await ensureSubmitted()
-        let counter = arena.transient.counters.contents().load(as: MetalRuntimeCounters.self)
-        let generated = min(Int(counter.generatedSpikesLo), arena.transient.eventCapacity)
+        let counter = arena.transient.counters.contents().load(
+            as: MetalRuntimeCounters.self
+        )
+        let generated = min(
+            Int(counter.generatedSpikesLo),
+            arena.transient.eventCapacity
+        )
         let pointer = arena.transient.outputEvents.contents().bindMemory(
             to: MetalEvent.self,
             capacity: max(generated, 1)
@@ -645,7 +699,9 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
             output.metabolicDemand.append(max(scalars[base + 3], 0))
             damage = max(damage, scalars[base + 3])
         }
-        output.uncertainty = arena.committedCPUState.tiles.map(\.uncertaintyScore).max() ?? 0
+        output.uncertainty = arena.committedCPUState.tiles
+            .map(\.uncertaintyScore)
+            .max() ?? 0
         output.plasticityMagnitude = abs(scalars[0])
         if damage > 0.5 {
             output.damageEvents.append(
@@ -661,57 +717,218 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
         return output
     }
 
-    public func validateShadow(context: ExecutionContext) async throws -> [RuntimeValidationIssue] {
+    public func validateShadow(
+        context executionContext: ExecutionContext
+    ) async throws -> [RuntimeValidationIssue] {
         guard let arena else { throw MetalRuntimeError.stateNotLoaded }
         try await ensureSubmitted()
-        let counters = arena.transient.counters.contents().load(as: MetalRuntimeCounters.self)
-        let count = min(Int(counters.validationCount), arena.transient.validationCapacity)
+        let counters = arena.transient.counters.contents().load(
+            as: MetalRuntimeCounters.self
+        )
+        let count = min(
+            Int(counters.validationCount),
+            arena.transient.validationCapacity
+        )
         let records = arena.transient.validationRecords.contents().bindMemory(
             to: MetalValidationRecord.self,
             capacity: max(count, 1)
         )
         var issues: [RuntimeValidationIssue] = []
-        issues.reserveCapacity(count)
+        issues.reserveCapacity(count + 1)
         for index in 0..<count {
             let record = records[index]
             issues.append(
                 RuntimeValidationIssue(
                     severity: record.severity == 0 ? .warning : .reject,
                     code: record.code,
-                    entity: UInt64(record.entityLo) | (UInt64(record.entityHi) << 32),
+                    entity: UInt64(record.entityLo) |
+                        (UInt64(record.entityHi) << 32),
                     value: record.value,
-                    message: Self.validationMessage(code: record.code, index: record.index)
+                    message: Self.validationMessage(
+                        code: record.code,
+                        index: record.index
+                    )
                 )
             )
+        }
+
+        if !issues.contains(where: { $0.severity == .reject }) {
+            do {
+                try await prepareFidelityMigrationIfNeeded(
+                    context: executionContext
+                )
+            } catch {
+                issues.append(
+                    RuntimeValidationIssue(
+                        severity: .reject,
+                        code: ValidationCode.invalidTopology,
+                        entity: 0,
+                        value: 0,
+                        message: "Adaptive-fidelity migration rejected: \(error)"
+                    )
+                )
+            }
         }
         return issues
     }
 
-    public func commitShadow(context executionContext: ExecutionContext) async throws {
-        guard let arena else { throw MetalRuntimeError.stateNotLoaded }
+    public func commitShadow(
+        context executionContext: ExecutionContext
+    ) async throws {
+        guard let activeArena = arena else {
+            throw MetalRuntimeError.stateNotLoaded
+        }
         guard currentContext?.transaction == executionContext.transaction else {
             throw RuntimeExecutionError.staleTransaction
         }
         try await ensureSubmitted()
-        arena.commit(time: executionContext.endTime, epoch: executionContext.epoch &+ 1)
+        try await prepareFidelityMigrationIfNeeded(context: executionContext)
+
+        retainedCounters = (
+            executionContext.transaction,
+            activeArena.transient.counters.contents()
+                .load(as: MetalRuntimeCounters.self)
+                .runtimeCounters()
+        )
+
+        if let pending = fidelityMigration.pending {
+            try await installMigratedState(pending.state)
+        } else {
+            activeArena.commit(
+                time: executionContext.endTime,
+                epoch: executionContext.epoch &+ 1
+            )
+        }
+        fidelityMigration.commit()
+        explicitFidelityPlanStaged = false
         clearOpenTransaction()
     }
 
-    public func rollbackShadow(context: ExecutionContext) async {
+    public func rollbackShadow(context executionContext: ExecutionContext) async {
+        if let arena,
+           currentContext?.transaction == executionContext.transaction {
+            retainedCounters = (
+                executionContext.transaction,
+                arena.transient.counters.contents()
+                    .load(as: MetalRuntimeCounters.self)
+                    .runtimeCounters()
+            )
+        }
         commandBuffer = nil
         arena?.rollback()
+        fidelityMigration.rollback()
+        explicitFidelityPlanStaged = false
         clearOpenTransaction()
     }
 
-    public func counters(context: ExecutionContext) async -> RuntimeCounters {
+    public func counters(
+        context executionContext: ExecutionContext
+    ) async -> RuntimeCounters {
+        if let retainedCounters,
+           retainedCounters.transaction == executionContext.transaction {
+            return retainedCounters.value
+        }
         guard let arena else { return RuntimeCounters() }
-        return arena.transient.counters.contents().load(as: MetalRuntimeCounters.self).runtimeCounters()
+        return arena.transient.counters.contents()
+            .load(as: MetalRuntimeCounters.self)
+            .runtimeCounters()
     }
 
     public func exportCommittedState() async throws -> TissueRuntimeState {
         guard let arena else { throw MetalRuntimeError.stateNotLoaded }
-        guard currentContext == nil else { throw RuntimeExecutionError.transactionInProgress }
+        guard currentContext == nil else {
+            throw RuntimeExecutionError.transactionInProgress
+        }
         return try await arena.downloadCommittedState()
+    }
+
+    private func prepareFidelityMigrationIfNeeded(
+        context executionContext: ExecutionContext
+    ) async throws {
+        guard !fidelityPreparationAttempted else { return }
+        fidelityPreparationAttempted = true
+        guard let arena else { throw MetalRuntimeError.stateNotLoaded }
+        let counters = arena.transient.counters.contents().load(
+            as: MetalRuntimeCounters.self
+        )
+        guard explicitFidelityPlanStaged ||
+                counters.promotedEntities > 0 ||
+                counters.demotedEntities > 0 else {
+            return
+        }
+        let shadow = try await arena.downloadShadowState()
+        _ = try fidelityMigration.prepare(
+            committedTemplate: arena.committedCPUState,
+            shadow: shadow,
+            execution: executionContext
+        )
+    }
+
+    private func installMigratedState(
+        _ state: TissueRuntimeState
+    ) async throws {
+        guard let shaders = shaderLibrary else {
+            throw MetalRuntimeError.stateNotLoaded
+        }
+        var normalized = state
+        normalized.reserveCapacity(normalized.capacity)
+        try normalized.validateCapacity()
+
+        let replacement = try MetalStateArena(
+            context: context,
+            initialState: normalized
+        )
+        try await replacement.uploadInitialState(normalized)
+        let tables = try makeArgumentTables(
+            arena: replacement,
+            shaders: shaders
+        )
+        try await clearPersistentTransientState(
+            arena: replacement,
+            shaders: shaders,
+            table: try shadowArgumentTable(
+                in: tables,
+                arena: replacement
+            )
+        )
+
+        arena = replacement
+        argumentTables = tables
+        maxCableDepth = Self.cableDepth(in: normalized)
+    }
+
+    private func makeArgumentTables(
+        arena: MetalStateArena,
+        shaders: MetalShaderLibrary
+    ) throws -> [ObjectIdentifier: MetalArgumentTable] {
+        let committed = try MetalArgumentTable(
+            context: context,
+            shaderLibrary: shaders,
+            state: arena.committed,
+            transient: arena.transient,
+            label: "NumiTissue.arguments.committed"
+        )
+        let shadow = try MetalArgumentTable(
+            context: context,
+            shaderLibrary: shaders,
+            state: arena.shadow,
+            transient: arena.transient,
+            label: "NumiTissue.arguments.shadow"
+        )
+        return [
+            ObjectIdentifier(arena.committed): committed,
+            ObjectIdentifier(arena.shadow): shadow
+        ]
+    }
+
+    private func shadowArgumentTable(
+        in tables: [ObjectIdentifier: MetalArgumentTable],
+        arena: MetalStateArena
+    ) throws -> MetalArgumentTable {
+        guard let table = tables[ObjectIdentifier(arena.shadow)] else {
+            throw MetalRuntimeError.stateNotLoaded
+        }
+        return table
     }
 
     private func encodeCableSolve(
@@ -781,7 +998,9 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
         startingAt firstIndex: Int
     ) -> [(MTLBuffer, Int)] {
         domains.enumerated().compactMap { offset, domain in
-            model.table(for: domain).map { ($0.effective, firstIndex + offset) }
+            model.table(for: domain).map {
+                ($0.effective, firstIndex + offset)
+            }
         }
     }
 
@@ -820,7 +1039,11 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
             compute.setBuffer(buffer, offset: 0, index: index)
             compute.useResource(buffer, usage: .read)
         }
-        table.useResources(on: compute, state: state, transient: transient)
+        table.useResources(
+            on: compute,
+            state: state,
+            transient: transient
+        )
         guard let library = shaderLibrary else {
             compute.endEncoding()
             throw MetalRuntimeError.stateNotLoaded
@@ -849,6 +1072,7 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
         commandSubmitted = false
         stagedOverlay = nil
         activeOverlayBuffers = nil
+        fidelityPreparationAttempted = false
     }
 
     private func clearPersistentTransientState(
@@ -862,21 +1086,37 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
             throw MetalRuntimeError.encoderCreationFailed("reset")
         }
         encoder.setBuffer(table.buffer, offset: 0, index: 0)
-        table.useResources(on: encoder, state: arena.shadow, transient: arena.transient)
+        table.useResources(
+            on: encoder,
+            state: arena.shadow,
+            transient: arena.transient
+        )
         let pipeline = try shaders.pipeline(.resetTransientState)
         encoder.ntDispatch1D(count: 4_096, pipeline: pipeline)
         encoder.endEncoding()
         try await context.awaitCompletion(command)
     }
 
-    private func writeControlInput(_ input: RuntimeInputFrame, to buffer: MTLBuffer) {
+    private func writeControlInput(
+        _ input: RuntimeInputFrame,
+        to buffer: MTLBuffer
+    ) {
         let values = buffer.contents().bindMemory(to: Float.self, capacity: 16)
         for index in 0..<16 { values[index] = 0 }
         for index in 0..<8 { values[index] = input.neuromodulators[index] }
         for index in 0..<8 { values[8 + index] = input.hormones[index] }
     }
 
-    private static func validationMessage(code: UInt32, index: UInt32) -> String {
+    private static func cableDepth(in state: TissueRuntimeState) -> UInt32 {
+        state.compartments.reduce(0) {
+            max($0, ($1.flags >> 16) & 0xFF)
+        }
+    }
+
+    private static func validationMessage(
+        code: UInt32,
+        index: UInt32
+    ) -> String {
         switch code {
         case ValidationCode.nonFinite:
             return "Non-finite GPU state at index \(index)"
@@ -903,11 +1143,15 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend {
 private extension MetalEvent {
     var routedEvent: RoutedEvent {
         RoutedEvent(
-            arrivalTick: UInt64(arrivalTickLo) | (UInt64(arrivalTickHi) << 32),
+            arrivalTick: UInt64(arrivalTickLo) |
+                (UInt64(arrivalTickHi) << 32),
             source: UInt64(sourceLo) | (UInt64(sourceHi) << 32),
-            destination: UInt64(destinationLo) | (UInt64(destinationHi) << 32),
+            destination: UInt64(destinationLo) |
+                (UInt64(destinationHi) << 32),
             amplitude: amplitude,
-            kind: RoutedEventKind(rawValue: UInt16(truncatingIfNeeded: kindAndFlags)) ?? .userDefined,
+            kind: RoutedEventKind(
+                rawValue: UInt16(truncatingIfNeeded: kindAndFlags)
+            ) ?? .userDefined,
             flags: UInt16(truncatingIfNeeded: kindAndFlags >> 16),
             sequence: sequence
         )

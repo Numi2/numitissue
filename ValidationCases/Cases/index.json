@@ -1,10 +1,11 @@
 {
   "schemaVersion":1,
   "name":"NumiTissue Phase 1 Scientific Validation Corpus",
-  "corpusVersion":"0.3.0",
+  "corpusVersion":"0.4.0",
   "entries":[
     {"id":"electrophysiology.passive-rc","manifestPath":"electrophysiology/passive-rc/case.json","required":true,"tier":"analytical"},
     {"id":"electrophysiology.two-compartment-cable","manifestPath":"electrophysiology/two-compartment-cable/case.json","required":true,"tier":"analytical"},
+    {"id":"electrophysiology.rallpack1","manifestPath":"electrophysiology/rallpack1/case.json","required":true,"tier":"crossSimulator"},
     {"id":"electrophysiology.hh-rush-larsen","manifestPath":"electrophysiology/hh-rush-larsen/case.json","required":true,"tier":"analytical"},
     {"id":"electrophysiology.spike-interpolation","manifestPath":"electrophysiology/spike-interpolation/case.json","required":true,"tier":"smoke"},
     {"id":"synapse.exponential-decay","manifestPath":"synapse/exponential-decay/case.json","required":true,"tier":"analytical"},
@@ -17,5 +18,5 @@
     {"id":"transaction.event-wheel-order","manifestPath":"transaction/event-wheel-order/case.json","required":true,"tier":"smoke"},
     {"id":"transaction.route-determinism","manifestPath":"transaction/route-determinism/case.json","required":true,"tier":"smoke"}
   ],
-  "metadata":{"numitissue.phase":"1","numitissue.time.quantum.microseconds":"25","numitissue.validation.policy":"tolerances-live-in-manifests","numitissue.required.case-count":"13"}
+  "metadata":{"numitissue.phase":"1","numitissue.time.quantum.microseconds":"25","numitissue.validation.policy":"tolerances-live-in-manifests","numitissue.required.case-count":"14"}
 }

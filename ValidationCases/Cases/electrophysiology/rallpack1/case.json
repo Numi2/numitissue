@@ -1,0 +1,20 @@
+{
+  "schemaVersion":1,
+  "id":"electrophysiology.rallpack1",
+  "title":"Rallpack 1 passive cable",
+  "summary":"Runs the standard 1000-compartment passive cable for 250 ms and compares both ends against the independent analytical series used by the Arbor NSuite.",
+  "domain":"electrophysiology",
+  "tier":"crossSimulator",
+  "deterministic":true,
+  "modelPath":"model.json",
+  "inputPath":"input.json",
+  "reference":{"kind":"analytical","engine":"Arbor NSuite Rallpack 1 analytical generator","version":"5af75d193bae5d43fad3fc87912ab22b53bf41d6","artifactPath":"expected.json","sourceURI":"https://github.com/arbor-sim/nsuite/tree/5af75d193bae5d43fad3fc87912ab22b53bf41d6/validation/rallpack1","citation":"Bhalla, Bilitch and Bower, Rallpacks, Trends in Neurosciences 15(11), 1992","metadata":{"external-simulators":"NEURON 9.0.2; Arbor 0.12.2","normalization":"RMS divided by maximum absolute reference voltage"}},
+  "criteria":[
+    {"id":"proximal-trace","observable":"compartment.proximal.voltage","unit":"mV","comparison":"trace","absoluteTolerance":null,"relativeTolerance":0.001,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":0.999,"conservationRelativeTolerance":null,"minimumSampleCount":25001,"metadata":{"measurement-proportion":"0"}},
+    {"id":"distal-trace","observable":"compartment.distal.voltage","unit":"mV","comparison":"trace","absoluteTolerance":null,"relativeTolerance":0.001,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":0.999,"conservationRelativeTolerance":null,"minimumSampleCount":25001,"metadata":{"measurement-proportion":"1"}}
+  ],
+  "tags":["arbor-nsuite","cross-simulator","neuron","phase-1","rallpack"],
+  "requiredProfiles":["scientific"],
+  "randomSeeds":[],
+  "metadata":{"execution.environment-variable":"NUMITISSUE_RUN_CROSS_SIMULATOR=1","reference.lock":"Tools/validation/reference-lock.json"}
+}

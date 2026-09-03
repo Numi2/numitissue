@@ -1,0 +1,1 @@
+{"acceptance":{"relativeRMSErrorLessThan":0.001},"finalTimeMilliseconds":250,"proximalVoltageMillivolts":101.935051858483,"distalVoltageMillivolts":43.09646796607879,"sourceRepository":"arbor-sim/nsuite","sourceRevision":"5af75d193bae5d43fad3fc87912ab22b53bf41d6"}

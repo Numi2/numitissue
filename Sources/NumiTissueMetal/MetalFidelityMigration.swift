@@ -6,12 +6,14 @@ import NumiTissueRuntime
 struct PendingMetalFidelityMigration: Sendable {
     var state: TissueRuntimeState
     var plan: FidelityMigrationPlan
+    var context: FidelityMigrationContext
 }
 
 /// Host-side coordinator for the topology-changing portion of adaptive fidelity. The GPU policy
 /// writes desired levels into the shadow cells; this coordinator reconciles those targets with an
 /// explicitly staged plan, projects conserved state through `FidelityMigrationEngine`, and keeps
-/// template/dormant-synapse history across arena replacements.
+/// template/dormant-synapse history across arena replacements. Prepared context is transaction
+/// local and becomes authoritative only after the new arena is installed successfully.
 final class MetalFidelityMigrationCoordinator: @unchecked Sendable {
     private struct StagedPlan: Sendable {
         var transaction: TransactionID
@@ -119,14 +121,20 @@ final class MetalFidelityMigrationCoordinator: @unchecked Sendable {
             throw AdaptiveFidelityBackendError.migrationValidationFailed(rejecting)
         }
 
-        context = nextContext
-        let value = PendingMetalFidelityMigration(state: source, plan: plan)
+        let value = PendingMetalFidelityMigration(
+            state: source,
+            plan: plan,
+            context: nextContext
+        )
         pending = value
         return value
     }
 
     func commit() {
-        if let pending { lastPlan = pending.plan }
+        if let pending {
+            context = pending.context
+            lastPlan = pending.plan
+        }
         pending = nil
         staged = nil
     }

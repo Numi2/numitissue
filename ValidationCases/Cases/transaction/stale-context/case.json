@@ -1,0 +1,20 @@
+{
+  "schemaVersion":1,
+  "id":"transaction.stale-context",
+  "title":"Stale epoch rejection",
+  "summary":"Verifies that an execution context whose epoch does not match committed state is rejected before shadow mutation.",
+  "domain":"transaction",
+  "tier":"smoke",
+  "deterministic":true,
+  "modelPath":null,
+  "inputPath":"input.json",
+  "reference":{"kind":"invariant","engine":"NumiTissue execution context contract","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"Transaction epochs identify the committed state used to prepare a shadow step","metadata":{}},
+  "criteria":[
+    {"id":"stale-rejected","observable":"transaction.begin-status","unit":"status","comparison":"topologyInvariant","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{"predicate":"RuntimeExecutionError.staleTransaction"}},
+    {"id":"committed-unchanged","observable":"state.committed-digest","unit":"crc64-state","comparison":"exactDigest","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}}
+  ],
+  "tags":["deterministic","epoch","phase-1","transaction"],
+  "requiredProfiles":["boundedDeterministic","scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

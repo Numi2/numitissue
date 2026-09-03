@@ -1,0 +1,21 @@
+{
+  "schemaVersion":1,
+  "id":"transaction.validation-rollback",
+  "title":"Biological validation rejection rollback",
+  "summary":"Drives a shadow compartment outside configured voltage bounds and verifies complete rollback of pools and ingested events.",
+  "domain":"transaction",
+  "tier":"analytical",
+  "deterministic":true,
+  "modelPath":null,
+  "inputPath":"input.json",
+  "reference":{"kind":"invariant","engine":"runtime validator and transaction authority","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"Rejecting validation issues prevent commit","metadata":{}},
+  "criteria":[
+    {"id":"rejected-status","observable":"transaction.status","unit":"status","comparison":"topologyInvariant","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{"predicate":"status==rejected"}},
+    {"id":"state-rollback","observable":"state.committed-digest","unit":"crc64-state","comparison":"exactDigest","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"event-rollback","observable":"event-wheel.pending-count","unit":"event","comparison":"scalar","absoluteTolerance":0,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}}
+  ],
+  "tags":["deterministic","phase-1","rollback","validation"],
+  "requiredProfiles":["scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

@@ -1,0 +1,22 @@
+{
+  "schemaVersion":1,
+  "id":"transaction.checkpoint-continuation",
+  "title":"Checkpoint continuation with pending event",
+  "summary":"Persists biological state, a future event, participant state, and transaction epoch, then resumes and delivers the event once.",
+  "domain":"transaction",
+  "tier":"analytical",
+  "deterministic":true,
+  "modelPath":null,
+  "inputPath":"input.json",
+  "reference":{"kind":"invariant","engine":"TissueCheckpoint plus backend-state envelope","version":"2","artifactPath":"expected.json","sourceURI":null,"citation":"A resumed committed state must continue with equivalent pending work","metadata":{}},
+  "criteria":[
+    {"id":"state-round-trip","observable":"checkpoint.state-digest","unit":"crc64-state","comparison":"exactDigest","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"auxiliary-round-trip","observable":"checkpoint.auxiliary-state-digest","unit":"sha256","comparison":"exactDigest","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"resumed-event-count","observable":"events.delivered-after-resume","unit":"event","comparison":"scalar","absoluteTolerance":0,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"participant-state","observable":"checkpoint.participant-state","unit":"bytes","comparison":"exactDigest","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}}
+  ],
+  "tags":["checkpoint","delayed-events","deterministic","phase-1","resume"],
+  "requiredProfiles":["boundedDeterministic","scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

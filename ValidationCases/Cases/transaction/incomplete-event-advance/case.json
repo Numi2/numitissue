@@ -1,0 +1,20 @@
+{
+  "schemaVersion":1,
+  "id":"transaction.incomplete-event-advance",
+  "title":"Incomplete event advancement cannot commit",
+  "summary":"Attempts to commit before the delay wheel reaches the transaction end and verifies that committed time and epoch remain unchanged.",
+  "domain":"transaction",
+  "tier":"smoke",
+  "deterministic":true,
+  "modelPath":null,
+  "inputPath":"input.json",
+  "reference":{"kind":"invariant","engine":"CPU reference transaction contract","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"All scheduled event intervals must be processed before commit","metadata":{}},
+  "criteria":[
+    {"id":"commit-rejected","observable":"transaction.commit-status","unit":"status","comparison":"topologyInvariant","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{"predicate":"CPUReferenceBackendError.incompleteEventAdvance"}},
+    {"id":"state-unchanged","observable":"state.committed-digest","unit":"crc64-state","comparison":"exactDigest","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}}
+  ],
+  "tags":["deterministic","events","phase-1","transaction"],
+  "requiredProfiles":["scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

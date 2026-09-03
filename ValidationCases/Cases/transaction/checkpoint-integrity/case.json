@@ -1,0 +1,20 @@
+{
+  "schemaVersion":1,
+  "id":"transaction.checkpoint-integrity",
+  "title":"Checkpoint payload and auxiliary-state integrity",
+  "summary":"Checks archive CRC rejection and SHA-256 binding of backend and participant state inside a decoded checkpoint.",
+  "domain":"transaction",
+  "tier":"analytical",
+  "deterministic":true,
+  "modelPath":null,
+  "inputPath":"input.json",
+  "reference":{"kind":"invariant","engine":"TissueCheckpoint format 2","version":"2","artifactPath":"expected.json","sourceURI":null,"citation":"Container CRC detects transport corruption; manifest SHA-256 binds auxiliary scientific state","metadata":{}},
+  "criteria":[
+    {"id":"archive-corruption","observable":"checkpoint.archive-corruption","unit":"status","comparison":"topologyInvariant","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{"predicate":"TissueCheckpointError.checksum"}},
+    {"id":"auxiliary-tampering","observable":"checkpoint.auxiliary-tampering","unit":"status","comparison":"topologyInvariant","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{"predicate":"TissueCheckpointError.auxiliaryStateDigestMismatch"}}
+  ],
+  "tags":["checkpoint","deterministic","integrity","phase-1","sha256"],
+  "requiredProfiles":["boundedDeterministic","scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

@@ -1,7 +1,7 @@
 {
   "schemaVersion":1,
   "name":"NumiTissue Phase 1 Scientific Validation Corpus",
-  "corpusVersion":"0.4.0",
+  "corpusVersion":"0.5.0",
   "entries":[
     {"id":"electrophysiology.passive-rc","manifestPath":"electrophysiology/passive-rc/case.json","required":true,"tier":"analytical"},
     {"id":"electrophysiology.two-compartment-cable","manifestPath":"electrophysiology/two-compartment-cable/case.json","required":true,"tier":"analytical"},
@@ -16,7 +16,13 @@
     {"id":"extracellular-field.uniform-diffusion","manifestPath":"extracellular-field/uniform-diffusion/case.json","required":true,"tier":"analytical"},
     {"id":"extracellular-field.source-sink","manifestPath":"extracellular-field/source-sink/case.json","required":true,"tier":"analytical"},
     {"id":"transaction.event-wheel-order","manifestPath":"transaction/event-wheel-order/case.json","required":true,"tier":"smoke"},
-    {"id":"transaction.route-determinism","manifestPath":"transaction/route-determinism/case.json","required":true,"tier":"smoke"}
+    {"id":"transaction.route-determinism","manifestPath":"transaction/route-determinism/case.json","required":true,"tier":"smoke"},
+    {"id":"transaction.rollback-pending-event","manifestPath":"transaction/rollback-pending-event/case.json","required":true,"tier":"analytical"},
+    {"id":"transaction.checkpoint-continuation","manifestPath":"transaction/checkpoint-continuation/case.json","required":true,"tier":"analytical"},
+    {"id":"transaction.stale-context","manifestPath":"transaction/stale-context/case.json","required":true,"tier":"smoke"},
+    {"id":"transaction.validation-rollback","manifestPath":"transaction/validation-rollback/case.json","required":true,"tier":"analytical"},
+    {"id":"transaction.checkpoint-integrity","manifestPath":"transaction/checkpoint-integrity/case.json","required":true,"tier":"analytical"},
+    {"id":"transaction.incomplete-event-advance","manifestPath":"transaction/incomplete-event-advance/case.json","required":true,"tier":"smoke"}
   ],
-  "metadata":{"numitissue.phase":"1","numitissue.time.quantum.microseconds":"25","numitissue.validation.policy":"tolerances-live-in-manifests","numitissue.required.case-count":"14"}
+  "metadata":{"numitissue.phase":"1","numitissue.time.quantum.microseconds":"25","numitissue.validation.policy":"tolerances-live-in-manifests","numitissue.required.case-count":"20"}
 }

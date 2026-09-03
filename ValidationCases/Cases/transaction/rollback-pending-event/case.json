@@ -1,0 +1,21 @@
+{
+  "schemaVersion":1,
+  "id":"transaction.rollback-pending-event",
+  "title":"Rollback preserves committed delayed events",
+  "summary":"Commits a future event, consumes it in a rejected shadow attempt, retries, and verifies exactly one delivery from the unchanged committed wheel.",
+  "domain":"transaction",
+  "tier":"analytical",
+  "deterministic":true,
+  "modelPath":null,
+  "inputPath":"input.json",
+  "reference":{"kind":"invariant","engine":"committed-shadow transaction contract","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"Rejected shadow state cannot mutate committed event authority","metadata":{}},
+  "criteria":[
+    {"id":"wheel-after-rollback","observable":"event-wheel.committed-digest","unit":"sha256-state","comparison":"exactDigest","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"retry-delivery-count","observable":"events.delivered-on-retry","unit":"event","comparison":"scalar","absoluteTolerance":0,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"final-wheel-empty","observable":"event-wheel.pending-count","unit":"event","comparison":"scalar","absoluteTolerance":0,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}}
+  ],
+  "tags":["delayed-events","deterministic","phase-1","rollback"],
+  "requiredProfiles":["boundedDeterministic","scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

@@ -4,6 +4,8 @@ import Metal
 
 public enum MetalKernel: String, Sendable, CaseIterable {
     case resetTransientState = "nt_reset_transient_state"
+    case materializeStateOverlays = "nt_materialize_state_overlays"
+    case materializeParameterOverlays = "nt_materialize_parameter_overlays"
     case buildWorklists = "nt_build_worklists"
     case encodeIndirectDispatch = "nt_encode_indirect_dispatch"
     case ingestInputEvents = "nt_ingest_input_events"
@@ -110,6 +112,7 @@ public final class MetalShaderLibrary: @unchecked Sendable {
     private static func loadBundledShaderSource(additionalSource: String?) throws -> String {
         let fileNames = [
             "NumiTissueABI",
+            "NumiTissueOverlays",
             "NumiTissueWorklists",
             "NumiTissueElectrophysiology",
             "NumiTissueEvents",

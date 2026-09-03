@@ -277,7 +277,9 @@ private final class NeuroMLParserDelegate: NSObject, XMLParserDelegate {
         let element = local(elementName)
         switch element {
         case "neuroml": document.id = attributeDict["id"]
-        case "include": if let href = attributeDict["href"] { document.includes.append(href) }
+        case "include":
+            if let href = attributeDict["href"] { document.includes.append(href) }
+            if let id = attributeDict["segmentGroup"] { group?.includes.insert(id) }
         case "cell":
             guard let id = attributeDict["id"] else { return fail(.missingAttribute(element: element, attribute: "id")) }
             cell = NeuroMLCell(id: id)
@@ -298,7 +300,6 @@ private final class NeuroMLParserDelegate: NSObject, XMLParserDelegate {
             guard let id = attributeDict["id"] else { return fail(.missingAttribute(element: element, attribute: "id")) }
             group = NeuroMLSegmentGroup(id: id, neuroLexID: attributeDict["neuroLexId"])
         case "member": if let text = attributeDict["segment"], let id = Int(text) { group?.members.insert(id) }
-        case "include": if let id = attributeDict["segmentGroup"] { group?.includes.insert(id) }
         case "channeldensity", "channeldensitynernst", "channeldensityghk":
             guard let id = attributeDict["id"], let channel = attributeDict["ionChannel"], let density = attributeDict["condDensity"] else { return }
             cell?.channelDensities.append(NeuroMLChannelDensity(

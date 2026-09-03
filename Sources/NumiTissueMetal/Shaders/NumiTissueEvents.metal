@@ -100,30 +100,99 @@ kernel void nt_ingest_input_events(
     }
 }
 
+inline bool nt_event_precedes(NTEvent lhs, NTEvent rhs) {
+    const ulong lhsArrival = nt_u64(lhs.arrivalTickLo, lhs.arrivalTickHi);
+    const ulong rhsArrival = nt_u64(rhs.arrivalTickLo, rhs.arrivalTickHi);
+    if (lhsArrival != rhsArrival) { return lhsArrival < rhsArrival; }
+    const ulong lhsDestination = nt_u64(lhs.destinationLo, lhs.destinationHi);
+    const ulong rhsDestination = nt_u64(rhs.destinationLo, rhs.destinationHi);
+    if (lhsDestination != rhsDestination) { return lhsDestination < rhsDestination; }
+    const ulong lhsSource = nt_u64(lhs.sourceLo, lhs.sourceHi);
+    const ulong rhsSource = nt_u64(rhs.sourceLo, rhs.sourceHi);
+    if (lhsSource != rhsSource) { return lhsSource < rhsSource; }
+    const uint lhsKind = lhs.kindAndFlags & 0xFFFFu;
+    const uint rhsKind = rhs.kindAndFlags & 0xFFFFu;
+    if (lhsKind != rhsKind) { return lhsKind < rhsKind; }
+    return lhs.sequence < rhs.sequence;
+}
+
+/// Atomic slot reservation makes ingestion safe, but reservation order is not a simulation
+/// ordering contract. Sort only the active bucket immediately before delivery. The wheel fixes
+/// each bucket's capacity at eventCapacity / 4096, so this bounded insertion sort is deterministic
+/// and does not allocate or synchronize the CPU per event.
+kernel void nt_sort_event_bucket(
+    constant NTResources& r [[buffer(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid != 0u) { return; }
+    const ulong startTick = nt_u64(r.header->phaseStartTickLo, r.header->phaseStartTickHi);
+    const uint bucket = nt_event_bucket(r, startTick);
+    const uint count = atomic_load_explicit(&r.eventBucketCounts[bucket], memory_order_relaxed);
+    const uint bucketCapacity = max(r.header->eventCapacity / NT_EVENT_BUCKETS, 1u);
+    const uint boundedCount = min(count, bucketCapacity);
+    const uint base = bucket * bucketCapacity;
+    for (uint i = 1u; i < boundedCount; ++i) {
+        NTEvent current = r.localEvents[base + i];
+        uint j = i;
+        while (j > 0u) {
+            NTEvent previous = r.localEvents[base + j - 1u];
+            if (!nt_event_precedes(current, previous)) { break; }
+            r.localEvents[base + j] = previous;
+            --j;
+        }
+        r.localEvents[base + j] = current;
+    }
+}
+
 kernel void nt_deliver_events(
     constant NTResources& r [[buffer(0)]],
     device const float* synapseParameters [[buffer(1)]],
     uint gid [[thread_position_in_grid]]
 ) {
+    // Synaptic release updates resources, facilitation, eligibility, and conductance. Those
+    // fields are stateful, so parallel lanes targeting the same synapse would race even after
+    // ordering the bucket. The bucket is deliberately bounded (normally 16 entries); process
+    // this active bucket in its stable order on one GPU lane.
+    if (gid != 0u) { return; }
     const ulong startTick = nt_u64(r.header->phaseStartTickLo, r.header->phaseStartTickHi);
     const ulong endTick = nt_u64(r.header->phaseEndTickLo, r.header->phaseEndTickHi);
     const uint bucket = nt_event_bucket(r, startTick);
     const uint count = atomic_load_explicit(&r.eventBucketCounts[bucket], memory_order_relaxed);
     const uint bucketCapacity = max(r.header->eventCapacity / NT_EVENT_BUCKETS, 1u);
-    if (gid >= min(count, bucketCapacity)) { return; }
-
-    device NTEvent& stored = r.localEvents[bucket * bucketCapacity + gid];
-    const ulong arrival = nt_u64(stored.arrivalTickLo, stored.arrivalTickHi);
-    if (arrival >= startTick && arrival < endTick && (stored.kindAndFlags & NT_EVENT_DELIVERED_FLAG) == 0u) {
-        NTEvent event = stored;
-        stored.kindAndFlags |= NT_EVENT_DELIVERED_FLAG;
-        nt_apply_event_to_synapse(r, synapseParameters, r.header->reserved2.y, event);
-        nt_atomic_add_u64(&r.counters->deliveredEventsLo, &r.counters->deliveredEventsHi, 1u);
+    const uint boundedCount = min(count, bucketCapacity);
+    const uint base = bucket * bucketCapacity;
+    for (uint slot = 0u; slot < boundedCount; ++slot) {
+        device NTEvent& stored = r.localEvents[base + slot];
+        const ulong arrival = nt_u64(stored.arrivalTickLo, stored.arrivalTickHi);
+        if (arrival >= startTick && arrival < endTick &&
+            (stored.kindAndFlags & NT_EVENT_DELIVERED_FLAG) == 0u) {
+            NTEvent event = stored;
+            stored.kindAndFlags |= NT_EVENT_DELIVERED_FLAG;
+            nt_apply_event_to_synapse(r, synapseParameters, r.header->reserved2.y, event);
+            nt_atomic_add_u64(&r.counters->deliveredEventsLo, &r.counters->deliveredEventsHi, 1u);
+        }
     }
 
-    threadgroup_barrier(mem_flags::mem_device);
-    if (gid == 0u && endTick > startTick) {
-        atomic_store_explicit(&r.eventBucketCounts[bucket], 0u, memory_order_relaxed);
+}
+
+/// Clears a routing bucket only after its complete delivery pass has finished. Keeping this in a
+/// separate kernel gives the command encoder a device-wide ordering point; a threadgroup barrier
+/// cannot safely protect a bucket when delivery spans multiple threadgroups. Events whose arrival
+/// tick is later in the same routing block therefore remain available to subsequent quanta.
+kernel void nt_clear_event_bucket(
+    constant NTResources& r [[buffer(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid != 0u) { return; }
+    const ulong startTick = nt_u64(r.header->phaseStartTickLo, r.header->phaseStartTickHi);
+    const ulong endTick = nt_u64(r.header->phaseEndTickLo, r.header->phaseEndTickHi);
+    const ulong width = max(ulong(r.header->routingBlockTicks), 1ul);
+    if (endTick > startTick && endTick % width == 0ul) {
+        atomic_store_explicit(
+            &r.eventBucketCounts[nt_event_bucket(r, startTick)],
+            0u,
+            memory_order_relaxed
+        );
     }
 }
 
@@ -223,7 +292,9 @@ kernel void nt_route_spikes(
     event.destinationLo = gid;
     event.destinationHi = 0u;
     event.kindAndFlags = 0u;
-    event.sequence = gid;
+    // Input events occupy the low deterministic sequence range. Route events are generated
+    // after ingestion and use a disjoint range so equal-key events have a stable order.
+    event.sequence = 0x80000000u | (gid & 0x7FFFFFFFu);
     event.amplitude = 1.0f;
     event.reserved0 = 0.0f;
     event.reserved1 = 0.0f;
@@ -231,6 +302,19 @@ kernel void nt_route_spikes(
     if (nt_schedule_local_event(r, event)) {
         nt_atomic_add_u64(&r.counters->routedEventsLo, &r.counters->routedEventsHi, 1u);
     }
+}
+
+/// Spike flags are consumed by every route lane, so clearing them from the route kernel would
+/// race with sibling synapses that still need to observe the source. The backend records this
+/// device-wide pass after routing, which makes the flag lifetime exactly one fast quantum.
+kernel void nt_clear_spike_flags(
+    constant NTResources& r [[buffer(0)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= r.header->compartmentCount) { return; }
+    device NTCompartmentState& compartment = r.compartments[gid];
+    const uint base = nt_mechanism_base(compartment, gid);
+    r.mechanismState[base + 15u] = 0.0f;
 }
 
 #endif

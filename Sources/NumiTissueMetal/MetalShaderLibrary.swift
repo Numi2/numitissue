@@ -10,7 +10,9 @@ public enum MetalKernel: String, Sendable, CaseIterable {
     case buildWorklists = "nt_build_worklists"
     case encodeIndirectDispatch = "nt_encode_indirect_dispatch"
     case ingestInputEvents = "nt_ingest_input_events"
+    case sortEventBucket = "nt_sort_event_bucket"
     case deliverEvents = "nt_deliver_events"
+    case clearEventBucket = "nt_clear_event_bucket"
     case decaySynapses = "nt_decay_synapses"
     case updateChannels = "nt_update_channels"
     case assembleCableSystem = "nt_assemble_cable_system"
@@ -19,6 +21,7 @@ public enum MetalKernel: String, Sendable, CaseIterable {
     case backSubstituteCableLevels = "nt_back_substitute_cable_levels"
     case detectSpikes = "nt_detect_spikes"
     case routeSpikes = "nt_route_spikes"
+    case clearSpikeFlags = "nt_clear_spike_flags"
     case updateFastFields = "nt_update_fast_fields"
     case updateMolecularDomains = "nt_update_molecular_domains"
     case updateGliaAndMetabolism = "nt_update_glia_metabolism"
@@ -57,6 +60,8 @@ public final class MetalShaderLibrary: @unchecked Sendable {
         numericalProfile = context.options.effectiveNumericalProfile
         let source = try Self.loadBundledShaderSource(additionalSource: additionalSource)
         let options = MTLCompileOptions()
+        // Scientific and balanced profiles preserve CPU/Metal agreement; the explicitly opted-in
+        // performance profile is the only path that enables Metal fast math.
         options.mathMode = numericalProfile == .performance32 ? .fast : .safe
         options.languageVersion = .version3_2
         options.preserveInvariance = true

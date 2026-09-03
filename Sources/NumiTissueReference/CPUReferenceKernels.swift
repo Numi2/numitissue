@@ -1,5 +1,6 @@
 import Foundation
 import NumiTissueCore
+import NumiTissueModels
 import NumiTissueRuntime
 
 public enum CPUReferenceKernels {
@@ -51,7 +52,11 @@ public enum CPUReferenceKernels {
         }
     }
 
-    public static func updateChannels(state: inout TissueRuntimeState, dtMilliseconds: Float) {
+    public static func updateChannels(
+        state: inout TissueRuntimeState,
+        dtMilliseconds: Float,
+        thermalScales: [Float] = []
+    ) {
         ensureMechanismCapacity(state: &state)
         for index in state.compartments.indices {
             let base = index * mechanismStride
@@ -59,7 +64,11 @@ public enum CPUReferenceKernels {
             var m = boundedGate(state.mechanismState[base], fallback: 0.05)
             var h = boundedGate(state.mechanismState[base + 1], fallback: 0.60)
             var n = boundedGate(state.mechanismState[base + 2], fallback: 0.32)
-            let dt = Double(dtMilliseconds)
+            let mechanismIndex = Int(state.compartments[index].flags & 0xFFFF)
+            let thermalScale = thermalScales.indices.contains(mechanismIndex)
+                ? max(thermalScales[mechanismIndex], 1e-4)
+                : 1
+            let dt = Double(dtMilliseconds) * Double(thermalScale)
             let mRates = alphaBetaM(voltage)
             let hRates = alphaBetaH(voltage)
             let nRates = alphaBetaN(voltage)
@@ -199,13 +208,20 @@ public enum CPUReferenceKernels {
         for index in state.compartments.indices { state.mechanismState[index * mechanismStride + 15] = 0 }
     }
 
-    public static func updateFields(state: inout TissueRuntimeState, dtMilliseconds: Float) {
-        let width = 32
-        let height = 32
-        let depth = 32
+    public static func updateFields(
+        state: inout TissueRuntimeState,
+        dtMilliseconds: Float,
+        fieldEdge: Int = 32,
+        fieldParameters: [GPUFieldParameter]? = nil,
+        fastQuantumMilliseconds: Float = 0.025
+    ) {
+        let width = max(fieldEdge, 1)
+        let height = width
+        let depth = width
         let voxelCount = width * height * depth
         let channels = 12
         let valuesPerTile = voxelCount * channels
+        let stepScale = max(dtMilliseconds, 0) / max(fastQuantumMilliseconds, 1e-6)
         for tile in state.tiles where Int(tile.fieldRange.count) >= valuesPerTile {
             let base = Int(tile.fieldRange.lowerBound)
             guard base >= 0 && base + valuesPerTile <= state.fields.count else { continue }
@@ -230,9 +246,37 @@ public enum CPUReferenceKernels {
                                 add(x, y, z - 1); add(x, y, z + 1)
                                 let value = state.fields[index]
                                 let laplacian = sum - neighborCount * center
-                                let updated = center + dtMilliseconds * (max(value.diffusionScale, 0) * laplacian + value.source - max(value.sink, 0) * center)
+                                let parameter = fieldParameters.flatMap { values in
+                                    values.indices.contains(channel) ? values[channel] : nil
+                                }
+                                let updated: Float
+                                if let parameter {
+                                    let alpha = max(parameter.dynamics.x, 0) *
+                                        max(value.diffusionScale, 0) * stepScale
+                                    let decayBase = min(max(parameter.dynamics.y, 0), 1)
+                                    let decay = pow(decayBase, stepScale)
+                                    let baseline = max(parameter.dynamics.z, 0)
+                                    let minimum = parameter.bounds.x
+                                    let maximum = max(parameter.bounds.y, minimum)
+                                    let decayed = baseline + (center - baseline) * decay
+                                    updated = min(max(
+                                        decayed + alpha * laplacian +
+                                            dtMilliseconds * (value.source - max(value.sink, 0) * center),
+                                        minimum
+                                    ), maximum)
+                                } else {
+                                    updated = center + dtMilliseconds * (
+                                        max(value.diffusionScale, 0) * laplacian +
+                                            value.source - max(value.sink, 0) * center
+                                    )
+                                }
                                 state.fields[index].concentration = max(updated, 0)
                                 state.fields[index].source = 0
+                                // Source and sink are transaction-local reaction terms. Metal
+                                // consumes both in the same field pass; retaining sink here makes
+                                // the CPU reference accumulate demand across glial updates and
+                                // diverge from the authoritative field equation.
+                                state.fields[index].sink = 0
                             }
                         }
                     }
@@ -241,38 +285,155 @@ public enum CPUReferenceKernels {
         }
     }
 
-    public static func updateGliaAndMetabolism(state: inout TissueRuntimeState, dtSeconds: Float) {
+    public static func updateGliaAndMetabolism(
+        state: inout TissueRuntimeState,
+        dtSeconds: Float,
+        fieldEdge: Int = 32,
+        cellPrograms: [GPUCellProgram] = [],
+        glialPrograms: [GPUGlialProgram] = []
+    ) {
         guard !state.tiles.isEmpty else { return }
-        let voxelCount = 32 * 32 * 32
+        let edge = max(fieldEdge, 1)
+        let voxelCount = edge * edge * edge
         for index in state.cells.indices {
             var cell = state.cells[index]
             guard Int(cell.tileIndex) < state.tiles.count else { continue }
             let tile = state.tiles[Int(cell.tileIndex)]
             let fieldBase = Int(tile.fieldRange.lowerBound)
-            guard Int(tile.fieldRange.count) >= voxelCount * 12, fieldBase + voxelCount * 6 <= state.fields.count else { continue }
+            guard Int(tile.fieldRange.count) >= voxelCount * 12,
+                  fieldBase >= 0,
+                  fieldBase + voxelCount * 12 <= state.fields.count else { continue }
             let local = SIMD3<Float>(
                 min(max(cell.position.x, 0), 199.999) / 200,
                 min(max(cell.position.y, 0), 199.999) / 200,
                 min(max(cell.position.z, 0), 199.999) / 200
             )
-            let x = min(Int(local.x * 32), 31)
-            let y = min(Int(local.y * 32), 31)
-            let z = min(Int(local.z * 32), 31)
-            let voxel = x + 32 * (y + 32 * z)
-            let oxygenIndex = fieldBase + 3 * voxelCount + voxel
-            let glucoseIndex = fieldBase + 4 * voxelCount + voxel
-            let lactateIndex = fieldBase + 5 * voxelCount + voxel
-            let oxygen = max(state.fields[oxygenIndex].concentration, 0)
-            let glucose = max(state.fields[glucoseIndex].concentration, 0)
-            let demand: Float = 0.001 + 0.004 * clamp01(tile.activityScore)
+            let x = min(Int(local.x * Float(edge)), edge - 1)
+            let y = min(Int(local.y * Float(edge)), edge - 1)
+            let z = min(Int(local.z * Float(edge)), edge - 1)
+            let voxel = x + edge * (y + edge * z)
+
+            @inline(__always)
+            func fieldIndex(_ channel: Int) -> Int {
+                fieldBase + channel * voxelCount + voxel
+            }
+            @inline(__always)
+            func concentration(_ channel: Int) -> Float {
+                max(state.fields[fieldIndex(channel)].concentration, 0)
+            }
+            @inline(__always)
+            func addSource(_ channel: Int, _ amount: Float) {
+                guard amount != 0 else { return }
+                state.fields[fieldIndex(channel)].source += amount
+            }
+            @inline(__always)
+            func addSink(_ channel: Int, _ amount: Float) {
+                guard amount != 0 else { return }
+                state.fields[fieldIndex(channel)].sink += amount
+            }
+            @inline(__always)
+            func finiteOr(_ value: Float, _ fallback: Float) -> Float {
+                value.isFinite ? value : fallback
+            }
+
+            let oxygen = concentration(Int(FieldChannel.oxygen.rawValue))
+            let glucose = concentration(Int(FieldChannel.glucose.rawValue))
+            let potassium = concentration(Int(FieldChannel.extracellularPotassium.rawValue))
+            let glutamate = concentration(Int(FieldChannel.glutamate.rawValue))
+            let inflammatory = concentration(Int(FieldChannel.inflammatoryDamage.rawValue))
+            let trophicIndex = fieldIndex(Int(FieldChannel.trophicSupport.rawValue))
+            let kind: UInt32 = cellPrograms.indices.contains(Int(cell.typeIndex))
+                ? cellPrograms[Int(cell.typeIndex)].identity.x
+                : UInt32.max
+            let glialProgramIndex: Int? = cellPrograms.indices.contains(Int(cell.typeIndex))
+                ? Int(cellPrograms[Int(cell.typeIndex)].programIndices.z)
+                : nil
+            let glialProgram = glialProgramIndex.flatMap { glialPrograms.indices.contains($0) ? glialPrograms[$0] : nil }
+            let uptake0 = max(finiteOr(glialProgram?.uptakeRates.x ?? 0.01, 0.01), 0)
+            let uptake1 = max(finiteOr(glialProgram?.uptakeRates.y ?? 0.01, 0.01), 0)
+            let uptake2 = max(finiteOr(glialProgram?.uptakeRates.z ?? 0.01, 0.01), 0)
+            let uptake3 = max(finiteOr(glialProgram?.uptakeRates.w ?? 0.01, 0.01), 0)
+            let release0 = max(finiteOr(glialProgram?.releaseRates.x ?? 0.01, 0.01), 0)
+            let release1 = max(finiteOr(glialProgram?.releaseRates.y ?? 0.01, 0.01), 0)
+            let release2 = max(finiteOr(glialProgram?.releaseRates.z ?? 0.01, 0.01), 0)
+            let release3 = max(finiteOr(glialProgram?.releaseRates.w ?? 0.01, 0.01), 0)
+            let threshold0 = finiteOr(glialProgram?.activationThresholds.x ?? 3.5, 3.5)
+            let threshold1 = finiteOr(glialProgram?.activationThresholds.y ?? 0.01, 0.01)
+            let threshold2 = finiteOr(glialProgram?.activationThresholds.z ?? 0.1, 0.1)
+            let threshold3 = finiteOr(glialProgram?.activationThresholds.w ?? 0.1, 0.1)
+
+            let electricalDemand = clamp01(tile.activityScore)
+            let structuralDemand = clamp01(tile.uncertaintyScore)
+            let demand = (0.001 + 0.004 * electricalDemand + 0.002 * structuralDemand) * (1 + clamp01(cell.damage))
             cell.oxygenStress = max(0, cell.oxygenStress + dtSeconds * (oxygen < 0.02 ? 0.5 : -0.1 * cell.oxygenStress))
             cell.glucoseStress = max(0, cell.glucoseStress + dtSeconds * (glucose < 0.05 ? 0.5 : -0.1 * cell.glucoseStress))
             let supplied = min(oxygen * 0.2, glucose * 0.1)
             cell.energyReserve = max(0, cell.energyReserve + dtSeconds * (supplied - demand))
             cell.damage = clamp01(cell.damage + dtSeconds * max(cell.oxygenStress + cell.glucoseStress - 0.5, 0) * 0.01)
-            state.fields[oxygenIndex].sink += demand * 0.6
-            state.fields[glucoseIndex].sink += demand * 0.4
-            if cell.typeIndex == 5 { state.fields[lactateIndex].source += demand * 0.15 }
+
+            addSink(Int(FieldChannel.oxygen.rawValue), demand * 0.6)
+            addSink(Int(FieldChannel.glucose.rawValue), demand * 0.4)
+
+            let regulatory = cell.regulatoryRange
+            let regulatoryLower = Int(regulatory.lowerBound)
+            let hasRegulatory = regulatory.count >= 4 &&
+                regulatoryLower >= 0 &&
+                regulatoryLower + 4 <= state.regulatoryState.count &&
+                regulatoryLower + 4 <= state.cells.count * 32
+            var state0 = hasRegulatory ? state.regulatoryState[regulatoryLower] : 0
+            var state1 = hasRegulatory ? state.regulatoryState[regulatoryLower + 1] : 0
+            var state2 = hasRegulatory ? state.regulatoryState[regulatoryLower + 2] : 0
+            var state3 = hasRegulatory ? state.regulatoryState[regulatoryLower + 3] : 0
+
+            if kind == UInt32(CellKind.astrocyte.rawValue) {
+                let ionicDrive = max(potassium - threshold0, 0)
+                let transmitterDrive = max(glutamate - threshold1, 0)
+                state1 = clamp01(state1 + dtSeconds * (transmitterDrive + 0.25 * ionicDrive - 0.2 * state1))
+                state0 = clamp01(state0 + dtSeconds * (state1 + 0.1 * electricalDemand - 0.3 * state0))
+                state2 = clamp01(state2 + dtSeconds * (state0 - 0.1 * state2))
+                addSink(Int(FieldChannel.extracellularPotassium.rawValue), uptake0 * state2 * ionicDrive)
+                addSink(Int(FieldChannel.glutamate.rawValue), uptake1 * state2 * glutamate)
+                addSource(Int(FieldChannel.lactate.rawValue), release0 * state2 * glucose)
+                addSource(Int(FieldChannel.trophicSupport.rawValue), release1 * state2 * (1 - cell.damage))
+                addSource(Int(FieldChannel.extracellularCalcium.rawValue), 0.001 * state0)
+            } else if kind == UInt32(CellKind.oligodendrocytePrecursor.rawValue) ||
+                        kind == UInt32(CellKind.oligodendrocyte.rawValue) {
+                let targetMaturity = kind == UInt32(CellKind.oligodendrocyte.rawValue)
+                    ? 1
+                    : clamp01(state.fields[trophicIndex].concentration)
+                state0 = clamp01(state0 + dtSeconds * 0.02 * (targetMaturity - state0))
+                state1 = clamp01(state1 + dtSeconds * (electricalDemand - 0.1 * state1))
+                state2 = clamp01(state0 * state1 * cell.energyReserve)
+                addSink(Int(FieldChannel.lactate.rawValue), uptake0 * state2 * 0.1)
+                addSource(Int(FieldChannel.trophicSupport.rawValue), release0 * state2)
+            } else if kind == UInt32(CellKind.microglia.rawValue) {
+                let damageDrive = max(max(tile.damageScore, cell.damage) - threshold2, 0)
+                let inflammationDrive = max(inflammatory - threshold3, 0)
+                state0 = clamp01(state0 + dtSeconds * (damageDrive + inflammationDrive - 0.05 * state0))
+                state1 = clamp01(state1 + dtSeconds * (state0 - 0.1 * state1))
+                state2 = clamp01(state2 + dtSeconds * (max(state0 - 0.4, 0) - 0.05 * state2))
+                state3 = clamp01(state3 + dtSeconds * (damageDrive - uptake3 * state3))
+                let inflammatoryRelease = release2 * state2 * (1 - 0.5 * state1)
+                addSource(Int(FieldChannel.inflammatoryDamage.rawValue), inflammatoryRelease)
+                addSink(Int(FieldChannel.inflammatoryDamage.rawValue), uptake2 * state1 * inflammatory)
+                addSource(Int(FieldChannel.trophicSupport.rawValue), release1 * state1 * (1 - state2))
+                cell.damage = clamp01(cell.damage - dtSeconds * uptake3 * state1 * cell.damage)
+            } else if kind == UInt32(CellKind.endothelial.rawValue) ||
+                        kind == UInt32(CellKind.perivascular.rawValue) {
+                let perfusionResponse = clamp01(1 - cell.oxygenStress - cell.glucoseStress)
+                state0 = clamp01(state0 + dtSeconds * (electricalDemand - 0.05 * state0))
+                addSource(Int(FieldChannel.oxygen.rawValue), release0 * perfusionResponse * (1 + state0))
+                addSource(Int(FieldChannel.glucose.rawValue), release1 * perfusionResponse * (1 + state0))
+                addSink(Int(FieldChannel.inflammatoryDamage.rawValue), uptake2 * inflammatory)
+                addSource(Int(FieldChannel.extracellularMatrix.rawValue), release3 * (1 - cell.damage))
+            }
+
+            if hasRegulatory {
+                state.regulatoryState[regulatoryLower] = state0
+                state.regulatoryState[regulatoryLower + 1] = state1
+                state.regulatoryState[regulatoryLower + 2] = state2
+                state.regulatoryState[regulatoryLower + 3] = state3
+            }
             state.cells[index] = cell
         }
     }

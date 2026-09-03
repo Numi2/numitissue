@@ -57,7 +57,10 @@ public struct TissueModelCompiler: Sendable {
         let fieldParameters = fieldDescriptors.map {
             GPUFieldParameter(
                 species: $0,
-                dtMilliseconds: Float(configuration.scheduler.eventBlockMicroseconds) / 1_000,
+                // The Metal field kernel scales this one-fast-quantum coefficient by the
+                // phase duration. Keeping the coefficient at the canonical quantum avoids
+                // counting the event-block duration twice for routing-block phases.
+                dtMilliseconds: fastQuantumMilliseconds,
                 voxelWidthMicrometers: configuration.tile.fieldVoxelWidthMicrometers
             )
         }

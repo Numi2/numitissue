@@ -376,7 +376,7 @@ public struct TissueRuntimeStateBuilder: Sendable {
             state.tiles[tileNumber].compartmentRange = RuntimeRange(lowerBound: compartmentStart, count: UInt32(state.compartments.count) - compartmentStart)
         }
 
-        let orderedSynapses = try synapses.sorted { lhs, rhs in
+        let orderedSynapses = synapses.sorted { lhs, rhs in
             guard let lhsTile = compartmentTileByID[lhs.targetCompartmentID], let rhsTile = compartmentTileByID[rhs.targetCompartmentID] else { return lhs.id.rawValue < rhs.id.rawValue }
             return lhsTile == rhsTile ? lhs.id.rawValue < rhs.id.rawValue : lhsTile < rhsTile
         }
@@ -421,7 +421,7 @@ public struct TissueRuntimeStateBuilder: Sendable {
             state.tiles[tile].fieldRange = RuntimeRange(lowerBound: fieldLower, count: UInt32(voxelsPerTile * fieldChannels))
         }
 
-        let orderedMicrodomains = try microdomains.sorted { lhs, rhs in
+        let orderedMicrodomains = microdomains.sorted { lhs, rhs in
             guard let lhsCell = cellIndex[lhs.ownerCellID], let rhsCell = cellIndex[rhs.ownerCellID] else { return lhs.id.rawValue < rhs.id.rawValue }
             let lhsTile = state.cells[Int(lhsCell)].tileIndex
             let rhsTile = state.cells[Int(rhsCell)].tileIndex

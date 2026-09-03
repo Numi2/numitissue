@@ -34,14 +34,38 @@ public final class MetalStateBufferSet: @unchecked Sendable {
     }
 }
 
+/// Double-buffered delayed-event storage. Events generated during a transaction are written to
+/// the shadow wheel and become authoritative only when the state arena commits. This keeps event
+/// scheduling inside the same shadow -> validate -> commit contract as the biological pools.
+public final class MetalEventWheelBuffers: @unchecked Sendable {
+    public let localEvents: MTLBuffer
+    public let eventBucketCounts: MTLBuffer
+
+    public init(
+        context: MetalDeviceContext,
+        eventCapacity: Int,
+        label: String
+    ) throws {
+        let capacity = max(1, eventCapacity)
+        localEvents = try context.makePrivateBuffer(
+            length: capacity * MemoryLayout<MetalEvent>.stride,
+            label: "\(label).events"
+        )
+        eventBucketCounts = try context.makePrivateBuffer(
+            length: 4_096 * MemoryLayout<UInt32>.stride,
+            label: "\(label).counts"
+        )
+    }
+}
+
 public final class MetalTransientBuffers: @unchecked Sendable {
     public let header: MTLBuffer
     public let inputEvents: MTLBuffer
     public let stimuli: MTLBuffer
-    public let localEvents: MTLBuffer
     public let outgoingEvents: MTLBuffer
     public let outputEvents: MTLBuffer
-    public let eventBucketCounts: MTLBuffer
+    public private(set) var committedEventWheel: MetalEventWheelBuffers
+    public private(set) var shadowEventWheel: MetalEventWheelBuffers
     public let worklistCounts: MTLBuffer
     public let electricalWorklist: MTLBuffer
     public let fieldWorklist: MTLBuffer
@@ -63,10 +87,18 @@ public final class MetalTransientBuffers: @unchecked Sendable {
         header = try context.makeSharedBuffer(length: 256, label: "NumiTissue.header", writeCombined: true)
         inputEvents = try context.makeSharedBuffer(length: self.eventCapacity * MemoryLayout<MetalEvent>.stride, label: "NumiTissue.inputEvents", writeCombined: true)
         stimuli = try context.makeSharedBuffer(length: self.eventCapacity * MemoryLayout<MetalEvent>.stride, label: "NumiTissue.stimuli", writeCombined: true)
-        localEvents = try context.makePrivateBuffer(length: self.eventCapacity * MemoryLayout<MetalEvent>.stride, label: "NumiTissue.localEvents")
+        committedEventWheel = try MetalEventWheelBuffers(
+            context: context,
+            eventCapacity: self.eventCapacity,
+            label: "NumiTissue.committedEventWheel"
+        )
+        shadowEventWheel = try MetalEventWheelBuffers(
+            context: context,
+            eventCapacity: self.eventCapacity,
+            label: "NumiTissue.shadowEventWheel"
+        )
         outgoingEvents = try context.makePrivateBuffer(length: self.eventCapacity * MemoryLayout<MetalEvent>.stride, label: "NumiTissue.outgoingEvents")
         outputEvents = try context.makeSharedBuffer(length: self.eventCapacity * MemoryLayout<MetalEvent>.stride, label: "NumiTissue.outputEvents")
-        eventBucketCounts = try context.makePrivateBuffer(length: 4_096 * MemoryLayout<UInt32>.stride, label: "NumiTissue.eventBucketCounts")
         worklistCounts = try context.makeSharedBuffer(length: 16 * MemoryLayout<UInt32>.stride, label: "NumiTissue.worklistCounts")
         electricalWorklist = try context.makePrivateBuffer(length: max(1, capacity.tiles) * MemoryLayout<UInt32>.stride, label: "NumiTissue.worklist.electrical")
         fieldWorklist = try context.makePrivateBuffer(length: max(1, capacity.tiles) * MemoryLayout<UInt32>.stride, label: "NumiTissue.worklist.fields")
@@ -78,6 +110,19 @@ public final class MetalTransientBuffers: @unchecked Sendable {
         counters = try context.makeSharedBuffer(length: MemoryLayout<MetalRuntimeCounters>.stride, label: "NumiTissue.counters")
         outputScalars = try context.makeSharedBuffer(length: max(4_096, capacity.tiles * 16) * MemoryLayout<Float>.stride, label: "NumiTissue.outputScalars")
         indirectDispatch = try context.makePrivateBuffer(length: 32 * MemoryLayout<MTLDispatchThreadgroupsIndirectArguments>.stride, label: "NumiTissue.indirectDispatch")
+    }
+
+    /// The active event wheel for the next transaction. It is deliberately the shadow wheel:
+    /// `MetalStateArena.commit()` swaps the two wheel objects at the same time as the biological
+    /// state buffers.
+    public var localEvents: MTLBuffer { shadowEventWheel.localEvents }
+    public var eventBucketCounts: MTLBuffer { shadowEventWheel.eventBucketCounts }
+
+    public var committedLocalEvents: MTLBuffer { committedEventWheel.localEvents }
+    public var committedEventBucketCounts: MTLBuffer { committedEventWheel.eventBucketCounts }
+
+    public func swapEventWheels() {
+        swap(&committedEventWheel, &shadowEventWheel)
     }
 
     public func resetCPUVisible() {
@@ -148,6 +193,26 @@ public final class MetalStateArena: @unchecked Sendable {
         try upload(fields, to: committed.fields, staging: &staging, blit: blit, label: "fields")
         try upload(microdomains, to: committed.microdomains, staging: &staging, blit: blit, label: "microdomains")
         try upload(state.molecularSpecies, to: committed.molecularSpecies, staging: &staging, blit: blit, label: "molecular")
+        blit.fill(
+            buffer: transient.committedEventWheel.eventBucketCounts,
+            range: 0..<transient.committedEventWheel.eventBucketCounts.length,
+            value: 0
+        )
+        blit.fill(
+            buffer: transient.shadowEventWheel.eventBucketCounts,
+            range: 0..<transient.shadowEventWheel.eventBucketCounts.length,
+            value: 0
+        )
+        blit.fill(
+            buffer: transient.committedEventWheel.localEvents,
+            range: 0..<transient.committedEventWheel.localEvents.length,
+            value: 0
+        )
+        blit.fill(
+            buffer: transient.shadowEventWheel.localEvents,
+            range: 0..<transient.shadowEventWheel.localEvents.length,
+            value: 0
+        )
         blit.endEncoding()
         try await context.awaitCompletion(MetalCommandBufferHandle(commandBuffer))
         try await copyCommittedToShadow()
@@ -157,6 +222,18 @@ public final class MetalStateArena: @unchecked Sendable {
 
     public func copyCommittedToShadow() async throws {
         let commandBuffer = try context.makeCommandBuffer(label: "NumiTissue.beginShadow")
+        try encodeCommittedToShadow(on: commandBuffer)
+        try await context.awaitCompletion(MetalCommandBufferHandle(commandBuffer))
+    }
+
+    /// Records the copy-on-write transition into an existing transaction command buffer. The
+    /// transaction backend uses this form so a normal step has one GPU submission and one final
+    /// completion wait, while initialization and standalone callers can keep the awaited helper
+    /// above.
+    public func encodeCommittedToShadow(
+        on commandBuffer: MTLCommandBuffer,
+        fence: MTLFence? = nil
+    ) throws {
         guard let blit = commandBuffer.makeBlitCommandEncoder() else { throw MetalRuntimeError.encoderCreationFailed("beginShadow") }
         context.telemetry.recordBlitEncoder()
         copy(source: committed.tiles, destination: shadow.tiles, blit: blit)
@@ -169,13 +246,26 @@ public final class MetalStateArena: @unchecked Sendable {
         copy(source: committed.fields, destination: shadow.fields, blit: blit)
         copy(source: committed.microdomains, destination: shadow.microdomains, blit: blit)
         copy(source: committed.molecularSpecies, destination: shadow.molecularSpecies, blit: blit)
+        copy(
+            source: transient.committedEventWheel.localEvents,
+            destination: transient.shadowEventWheel.localEvents,
+            blit: blit
+        )
+        copy(
+            source: transient.committedEventWheel.eventBucketCounts,
+            destination: transient.shadowEventWheel.eventBucketCounts,
+            blit: blit
+        )
+        if let fence {
+            blit.updateFence(fence)
+        }
         blit.endEncoding()
-        try await context.awaitCompletion(MetalCommandBufferHandle(commandBuffer))
     }
 
     /// Commit is an O(1) ownership swap after the final command buffer and validation readback finish.
     public func commit(time: TissueTime, epoch: UInt64) {
         swap(&committed, &shadow)
+        transient.swapEventWheels()
         committedCPUState.time = time
         committedCPUState.epoch = epoch
     }
@@ -193,13 +283,21 @@ public final class MetalStateArena: @unchecked Sendable {
     public func uploadInput(events: [RoutedEvent], stimuli: [TissueStimulus]) throws {
         guard events.count <= transient.eventCapacity else { throw MetalRuntimeError.capacityExceeded("input events") }
         guard stimuli.count <= transient.eventCapacity else { throw MetalRuntimeError.capacityExceeded("stimuli") }
-        let metalEvents = events.map(MetalEvent.init)
+        // CPU EventDelayWheel assigns a fresh sequence in ingestion order rather than trusting
+        // the caller's placeholder. Mirror that contract before the unordered GPU ingestion
+        // kernel; the bounded bucket sort then reproduces the reference ordering for equal-time
+        // events without depending on atomic reservation order.
+        let metalEvents = events.enumerated().map { index, event in
+            var result = MetalEvent(event)
+            result.sequence = UInt32(clamping: index)
+            return result
+        }
         metalEvents.withUnsafeBytes { bytes in
             if let base = bytes.baseAddress { transient.inputEvents.contents().copyMemory(from: base, byteCount: bytes.count) }
             context.telemetry.recordUpload(bytes: bytes.count)
         }
-        let metalStimuli = stimuli.map { stimulus in
-            MetalEvent(RoutedEvent(
+        let metalStimuli = stimuli.enumerated().map { index, stimulus in
+            var result = MetalEvent(RoutedEvent(
                 arrivalTick: stimulus.startTick,
                 source: 0,
                 destination: stimulus.destination,
@@ -208,6 +306,8 @@ public final class MetalStateArena: @unchecked Sendable {
                 flags: stimulus.flags,
                 sequence: stimulus.durationTicks
             ))
+            result.sequence = UInt32(clamping: events.count + index)
+            return result
         }
         metalStimuli.withUnsafeBytes { bytes in
             if let base = bytes.baseAddress { transient.stimuli.contents().copyMemory(from: base, byteCount: bytes.count) }

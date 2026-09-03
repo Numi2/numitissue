@@ -219,22 +219,28 @@ public struct MetalEventWheelSnapshot: Sendable, Hashable, Codable {
         if lhs.arrivalTick != rhs.arrivalTick {
             return lhs.arrivalTick < rhs.arrivalTick
         }
-        if lhs.source != rhs.source {
-            return lhs.source < rhs.source
-        }
-        if lhs.sequence != rhs.sequence {
-            return lhs.sequence < rhs.sequence
-        }
         switch (lhs.target, rhs.target) {
         case (.synapse(let left), .synapse(let right)):
-            return left < right
+            if left != right { return left < right }
         case (.raw(let left), .raw(let right)):
-            return left < right
+            if left != right { return left < right }
         case (.synapse, .raw):
             return true
         case (.raw, .synapse):
             return false
         }
+        if lhs.source != rhs.source {
+            return lhs.source < rhs.source
+        }
+        let lhsKind = lhs.kindAndFlags & 0xFFFF
+        let rhsKind = rhs.kindAndFlags & 0xFFFF
+        if lhsKind != rhsKind {
+            return lhsKind < rhsKind
+        }
+        if lhs.sequence != rhs.sequence {
+            return lhs.sequence < rhs.sequence
+        }
+        return lhs.kindAndFlags < rhs.kindAndFlags
     }
 }
 
@@ -244,7 +250,8 @@ public extension MetalStateArena {
     func exportPersistentEventWheel(
         state: TissueRuntimeState,
         routingBlockTicks: UInt64,
-        minimumArrivalTick: UInt64
+        minimumArrivalTick: UInt64,
+        wheel: MetalEventWheelBuffers? = nil
     ) async throws -> MetalEventWheelSnapshot {
         guard routingBlockTicks > 0 else {
             throw MetalEventWheelPersistenceError.invalidRoutingBlockTicks
@@ -281,21 +288,20 @@ public extension MetalStateArena {
             throw MetalRuntimeError.encoderCreationFailed("NT.Migration.EventWheel")
         }
         blit.copy(
-            from: transient.eventBucketCounts,
+            from: (wheel ?? transient.committedEventWheel).eventBucketCounts,
             sourceOffset: 0,
             to: counts,
             destinationOffset: 0,
-            size: transient.eventBucketCounts.length
+            size: (wheel ?? transient.committedEventWheel).eventBucketCounts.length
         )
         blit.copy(
-            from: transient.localEvents,
+            from: (wheel ?? transient.committedEventWheel).localEvents,
             sourceOffset: 0,
             to: events,
             destinationOffset: 0,
-            size: transient.localEvents.length
+            size: (wheel ?? transient.committedEventWheel).localEvents.length
         )
         blit.endEncoding()
-        commandBuffer.commit()
         try await context.awaitCompletion(commandBuffer)
 
         let countPointer = counts.contents().bindMemory(
@@ -425,25 +431,40 @@ public extension MetalStateArena {
         blit.copy(
             from: counts,
             sourceOffset: 0,
-            to: transient.eventBucketCounts,
+            to: transient.committedEventBucketCounts,
             destinationOffset: 0,
-            size: transient.eventBucketCounts.length
+            size: transient.committedEventBucketCounts.length
         )
         blit.copy(
             from: events,
             sourceOffset: 0,
-            to: transient.localEvents,
+            to: transient.committedLocalEvents,
             destinationOffset: 0,
-            size: transient.localEvents.length
+            size: transient.committedLocalEvents.length
+        )
+        blit.copy(
+            from: counts,
+            sourceOffset: 0,
+            to: transient.shadowEventWheel.eventBucketCounts,
+            destinationOffset: 0,
+            size: transient.shadowEventWheel.eventBucketCounts.length
+        )
+        blit.copy(
+            from: events,
+            sourceOffset: 0,
+            to: transient.shadowEventWheel.localEvents,
+            destinationOffset: 0,
+            size: transient.shadowEventWheel.localEvents.length
         )
         blit.endEncoding()
-        commandBuffer.commit()
         try await context.awaitCompletion(commandBuffer)
     }
 }
 
 public enum MetalEventWheelPersistenceError: Error, Sendable, CustomStringConvertible {
     case invalidRoutingBlockTicks
+    case stateTickMismatch(snapshot: UInt64, committed: UInt64)
+    case routingBlockMismatch(snapshot: UInt64, expected: UInt64)
     case eventCapacityTooSmall(Int)
     case bucketOverflow(bucket: Int, reported: Int, capacity: Int)
     case overdueEvent(arrivalTick: UInt64, minimumArrivalTick: UInt64)
@@ -455,6 +476,10 @@ public enum MetalEventWheelPersistenceError: Error, Sendable, CustomStringConver
         switch self {
         case .invalidRoutingBlockTicks:
             return "Metal event-wheel routing cadence must be positive"
+        case .stateTickMismatch(let snapshot, let committed):
+            return "Metal event-wheel snapshot minimum tick \(snapshot) does not match committed tissue tick \(committed)"
+        case .routingBlockMismatch(let snapshot, let expected):
+            return "Metal event-wheel routing cadence \(snapshot) does not match the active cadence \(expected)"
         case .eventCapacityTooSmall(let capacity):
             return "Metal event capacity \(capacity) is below the 4096-bucket wheel minimum"
         case .bucketOverflow(let bucket, let reported, let capacity):

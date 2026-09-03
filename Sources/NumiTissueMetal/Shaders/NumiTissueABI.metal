@@ -174,6 +174,17 @@ struct NTMicrodomainState {
     uint reserved1;
 };
 
+static_assert(sizeof(NTRange) == 16, "NTRange ABI drift");
+static_assert(sizeof(NTSimulationHeader) == 224, "NTSimulationHeader ABI drift");
+static_assert(sizeof(NTTileState) == 160, "NTTileState ABI drift");
+static_assert(sizeof(NTCellState) == 144, "NTCellState ABI drift");
+static_assert(sizeof(NTSegmentState) == 80, "NTSegmentState ABI drift");
+static_assert(sizeof(NTCompartmentState) == 112, "NTCompartmentState ABI drift");
+static_assert(sizeof(NTSynapseState) == 80, "NTSynapseState ABI drift");
+static_assert(sizeof(NTEvent) == 48, "NTEvent ABI drift");
+static_assert(sizeof(NTFieldState) == 16, "NTFieldState ABI drift");
+static_assert(sizeof(NTMicrodomainState) == 80, "NTMicrodomainState ABI drift");
+
 struct NTValidationRecord {
     uint code;
     uint severity;
@@ -203,6 +214,9 @@ struct NTRuntimeCounters {
     atomic_uint numericalSubsteps;
     atomic_uint validationCount;
 };
+
+static_assert(sizeof(NTValidationRecord) == 32, "NTValidationRecord ABI drift");
+static_assert(sizeof(NTRuntimeCounters) == 64, "NTRuntimeCounters ABI drift");
 
 struct NTResources {
     device NTSimulationHeader* header [[id(0)]];

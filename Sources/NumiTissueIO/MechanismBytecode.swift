@@ -184,15 +184,33 @@ public struct CompiledMechanismProgramIR: Sendable, Hashable, Codable {
         guard stateStride <= 4_096 else { throw MechanismBytecodeError.stateStrideExceeded(Int(stateStride)) }
         guard maximumStackDepth <= 128 else { throw MechanismBytecodeError.stackDepthExceeded(Int(maximumStackDepth)) }
         guard maximumCallDepth <= 8 else { throw MechanismBytecodeError.callDepthExceeded(Int(maximumCallDepth)) }
+        for (index, constant) in constants.enumerated() where !constant.isFinite {
+            throw MechanismBytecodeError.nonFiniteValue("constant[\(index)]")
+        }
+        for variable in variables {
+            guard variable.defaultValue.isFinite,
+                  variable.lowerBound.isFinite,
+                  variable.upperBound.isFinite,
+                  variable.lowerBound <= variable.upperBound else {
+                throw MechanismBytecodeError.nonFiniteValue(variable.name)
+            }
+        }
         for instruction in instructions {
+            guard instruction.immediate.isFinite else {
+                throw MechanismBytecodeError.nonFiniteValue("instruction")
+            }
             switch instruction.opcode {
             case .pushConstant where Int(instruction.operandA) >= constants.count:
                 throw MechanismBytecodeError.invalidConstant(instruction.operandA)
-            case .loadVariable, .storeVariable, .storeDerivative where instruction.operandA >= stateStride:
+            case .loadVariable where instruction.operandA >= stateStride,
+                 .storeVariable where instruction.operandA >= stateStride,
+                 .storeDerivative where instruction.operandA >= stateStride:
                 throw MechanismBytecodeError.invalidVariable(instruction.operandA)
-            case .call, .solve where Int(instruction.operandA) >= routines.count:
+            case .call where Int(instruction.operandA) >= routines.count,
+                 .solve where Int(instruction.operandA) >= routines.count:
                 throw MechanismBytecodeError.invalidRoutine(instruction.operandA)
-            case .jump, .jumpIfZero where Int(instruction.operandA) > instructions.count:
+            case .jump where Int(instruction.operandA) > instructions.count,
+                 .jumpIfZero where Int(instruction.operandA) > instructions.count:
                 throw MechanismBytecodeError.invalidJump(instruction.operandA)
             default: break
             }
@@ -302,14 +320,26 @@ public enum MechanismBytecodeCompiler {
                 guard globalSlots[variable.name] == nil else { throw MechanismBytecodeError.duplicateVariable(variable.name) }
                 globalSlots[variable.name] = offset
                 let count = UInt16(clamping: variable.arrayCount)
+                let defaultValue = try representable(
+                    variable.defaultValue ?? 0,
+                    path: variable.name + ".defaultValue"
+                )
+                let lowerBound = try representable(
+                    variable.lowerBound ?? -Double(Float.greatestFiniteMagnitude),
+                    path: variable.name + ".lowerBound"
+                )
+                let upperBound = try representable(
+                    variable.upperBound ?? Double(Float.greatestFiniteMagnitude),
+                    path: variable.name + ".upperBound"
+                )
                 variableLayouts.append(MechanismVariableLayout(
                     name: variable.name,
                     offset: offset,
                     count: count,
                     role: variable.role,
-                    defaultValue: Float(variable.defaultValue ?? 0),
-                    lowerBound: Float(variable.lowerBound ?? -.greatestFiniteMagnitude),
-                    upperBound: Float(variable.upperBound ?? .greatestFiniteMagnitude)
+                    defaultValue: defaultValue,
+                    lowerBound: lowerBound,
+                    upperBound: upperBound
                 ))
                 offset += UInt32(count)
             }
@@ -421,7 +451,12 @@ public enum MechanismBytecodeCompiler {
 
         mutating func compileExpression(_ expression: MechanismExpressionIR) throws {
             switch expression {
-            case .constant(let value): emit(.pushConstant, a: constant(Float(value))); push()
+            case .constant(let value):
+                emit(
+                    .pushConstant,
+                    a: constant(try representable(value, path: "expression constant"))
+                )
+                push()
             case .symbol(let name): emit(.loadVariable, a: try slot(name)); push()
             case .indexedSymbol(let name, let index):
                 try compileExpression(index)
@@ -596,6 +631,19 @@ public enum MechanismBytecodeCompiler {
     }
 }
 
+private func representable(_ value: Double, path: String) throws -> Float {
+    guard value.isFinite,
+          value <= Double(Float.greatestFiniteMagnitude),
+          value >= -Double(Float.greatestFiniteMagnitude) else {
+        throw MechanismBytecodeError.nonRepresentableFloat(path, value)
+    }
+    let result = Float(value)
+    guard result.isFinite else {
+        throw MechanismBytecodeError.nonRepresentableFloat(path, value)
+    }
+    return result
+}
+
 public enum MechanismBytecodeError: Error, Sendable, CustomStringConvertible {
     case duplicateVariable(String)
     case unknownVariable(String)
@@ -609,6 +657,8 @@ public enum MechanismBytecodeError: Error, Sendable, CustomStringConvertible {
     case invalidRoutine(UInt32)
     case invalidJump(UInt32)
     case unsupportedStatement(String)
+    case nonFiniteValue(String)
+    case nonRepresentableFloat(String, Double)
 
     public var description: String {
         switch self {
@@ -624,6 +674,9 @@ public enum MechanismBytecodeError: Error, Sendable, CustomStringConvertible {
         case .invalidRoutine(let value): return "Bytecode references invalid routine \(value)"
         case .invalidJump(let value): return "Bytecode references invalid jump target \(value)"
         case .unsupportedStatement(let value): return "Unsupported bytecode statement \(value)"
+        case .nonFiniteValue(let value): return "Bytecode contains a non-finite value at \(value)"
+        case .nonRepresentableFloat(let path, let value):
+            return "Bytecode value " + String(value) + " at " + path + " is not representable as Float32"
         }
     }
 }

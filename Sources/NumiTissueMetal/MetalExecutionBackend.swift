@@ -65,11 +65,11 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
     private var shaderLibrary: MetalShaderLibrary?
     private var modelBuffers: MetalModelBuffers?
     private var biologyMetadata: MetalBiologyMetadataBuffers?
-    private var arena: MetalStateArena?
+    var arena: MetalStateArena?
     private var argumentTables: [ObjectIdentifier: MetalArgumentTable] = [:]
     private var phaseHeaderRing: MetalPhaseHeaderRing?
     private var model: CompiledTissueModel?
-    private var currentContext: ExecutionContext?
+    var currentContext: ExecutionContext?
     private var currentInput: RuntimeInputFrame?
     private var commandBuffer: MTLCommandBuffer?
     private var maxCableDepth: UInt32 = 0
@@ -79,6 +79,9 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
     private var explicitFidelityPlanStaged = false
     private var fidelityPreparationAttempted = false
     private var retainedCounters: (transaction: TransactionID, value: RuntimeCounters)?
+    private var transactionFence: MTLFence?
+    private var transactionFenceSignaled = false
+    var checkpointRoutingBlockTicks: UInt64?
 
     public init(
         capabilities: TissueRuntimeCapabilities,
@@ -90,6 +93,98 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
         self.options = options
         self.molecularProgram = molecularProgram
         context = try MetalDeviceContext(device: device, options: options)
+        transactionFence = nil
+        checkpointRoutingBlockTicks = nil
+    }
+
+    private func validateMolecularProgram(
+        model: CompiledTissueModel,
+        initialState: TissueRuntimeState
+    ) throws {
+        guard model.microdomainHeaders.count == initialState.microdomains.count else {
+            throw MetalRuntimeError.unsupported(
+                "compiled model has \(model.microdomainHeaders.count) molecular domain header(s), but the initial state has \(initialState.microdomains.count)"
+            )
+        }
+        guard !model.microdomainHeaders.isEmpty else { return }
+        guard !molecularProgram.networks.isEmpty else {
+            throw MetalRuntimeError.unsupported(
+                "compiled tissue model contains molecular domains but no Metal molecular program was provided"
+            )
+        }
+        for (domainIndex, domain) in initialState.microdomains.enumerated() {
+            let networkIndex = Int(domain.reactionNetworkIndex)
+            guard networkIndex < molecularProgram.networks.count else {
+                throw MetalRuntimeError.unsupported(
+                    "molecular domain \(domainIndex) references network \(networkIndex), but the program contains \(molecularProgram.networks.count)"
+                )
+            }
+            let network = molecularProgram.networks[networkIndex]
+            guard Int(domain.speciesRange.count) == Int(network.speciesCount) else {
+                throw MetalRuntimeError.unsupported(
+                    "molecular domain \(domainIndex) has \(domain.speciesRange.count) species, but network \(networkIndex) requires \(network.speciesCount)"
+                )
+            }
+            let lower = Int(domain.speciesRange.lowerBound)
+            let count = Int(domain.speciesRange.count)
+            guard lower <= initialState.molecularSpecies.count,
+                  count <= initialState.molecularSpecies.count - lower else {
+                throw MetalRuntimeError.unsupported(
+                    "molecular domain \(domainIndex) species range is outside the molecular state pool"
+                )
+            }
+            guard UInt64(network.reactionOffset) + UInt64(network.reactionCount) <=
+                    UInt64(molecularProgram.reactions.count) else {
+                throw MetalRuntimeError.unsupported(
+                    "molecular network \(networkIndex) reaction range is outside the Metal program"
+                )
+            }
+            for reactionIndex in 0..<Int(network.reactionCount) {
+                let reaction = molecularProgram.reactions[Int(network.reactionOffset) + reactionIndex]
+                guard reaction.rateConstant.isFinite,
+                      reaction.rateConstant >= 0,
+                      reaction.reverseRateConstant.isFinite,
+                      reaction.reverseRateConstant >= 0 else {
+                    throw MetalRuntimeError.unsupported(
+                        "molecular network \(networkIndex) reaction \(reactionIndex) has a non-finite or negative rate"
+                    )
+                }
+                for lane in 0..<4 {
+                    let reactant = reaction.reactants[lane]
+                    let product = reaction.products[lane]
+                    let reactantCoefficient = reaction.reactantStoichiometry[lane]
+                    let productCoefficient = reaction.productStoichiometry[lane]
+                    if reactant == UInt32.max {
+                        guard reactantCoefficient == 0 else {
+                            throw MetalRuntimeError.unsupported(
+                                "molecular network \(networkIndex) reaction \(reactionIndex) has a coefficient for an empty reactant lane"
+                            )
+                        }
+                    } else {
+                        guard reactant < network.speciesCount,
+                              reactantCoefficient > 0 else {
+                            throw MetalRuntimeError.unsupported(
+                                "molecular network \(networkIndex) reaction \(reactionIndex) has an invalid reactant"
+                            )
+                        }
+                    }
+                    if product == UInt32.max {
+                        guard productCoefficient == 0 else {
+                            throw MetalRuntimeError.unsupported(
+                                "molecular network \(networkIndex) reaction \(reactionIndex) has a coefficient for an empty product lane"
+                            )
+                        }
+                    } else {
+                        guard product < network.speciesCount,
+                              productCoefficient > 0 else {
+                            throw MetalRuntimeError.unsupported(
+                                "molecular network \(networkIndex) reaction \(reactionIndex) has an invalid product"
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     public func load(
@@ -100,6 +195,7 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
         var normalized = initialState
         normalized.reserveCapacity(normalized.capacity)
         try normalized.validateCapacity()
+        try validateMolecularProgram(model: model, initialState: normalized)
 
         let shaders = try await MetalShaderLibrary(context: context)
         try shaders.prewarm()
@@ -193,13 +289,18 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
         guard currentContext == nil else {
             throw MetalRuntimeError.transactionAlreadyOpen
         }
+        if let checkpointRoutingBlockTicks,
+           checkpointRoutingBlockTicks != executionContext.cadence.routingBlockTicks {
+            throw MetalRuntimeError.unsupported(
+                "checkpoint routing cadence (checkpointRoutingBlockTicks) does not match execution cadence (executionContext.cadence.routingBlockTicks)"
+            )
+        }
+        self.checkpointRoutingBlockTicks = executionContext.cadence.routingBlockTicks
         if let stagedOverlay,
            stagedOverlay.transaction != executionContext.transaction {
             throw RuntimeExecutionError.staleTransaction
         }
         try fidelityMigration.assertStagedTransaction(executionContext.transaction)
-
-        try await arena.copyCommittedToShadow()
         arena.transient.resetCPUVisible()
         var effectiveInput = input
         if let stagedOverlay {
@@ -214,6 +315,10 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
                 return $0.kind < $1.kind
             }
         }
+        _ = try effectiveInput.validated(
+            startTime: executionContext.startTime,
+            cadence: executionContext.cadence
+        )
         try arena.uploadInput(
             events: effectiveInput.afferentEvents,
             stimuli: effectiveInput.stimuli
@@ -236,7 +341,38 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
         command.label = "NumiTissue.transaction.\(executionContext.transaction.rawValue)"
         commandBuffer = command
 
-        try modelBuffers.encodeResetEffective(on: command)
+        if options.hazardMode == .untrackedWithExplicitBarriers {
+            guard let fence = context.device.makeFence() else {
+                clearOpenTransaction()
+                throw MetalRuntimeError.unsupported(
+                    "untracked Metal execution requires MTLFence support"
+                )
+            }
+            transactionFence = fence
+        } else {
+            transactionFence = nil
+        }
+        transactionFenceSignaled = false
+
+        // Keep copy-on-write inside the transaction submission. The previous committed
+        // transaction has already completed before begin is called, so a separate awaited blit
+        // here only adds a CPU/GPU round trip without providing additional ordering.
+        try arena.encodeCommittedToShadow(
+            on: command,
+            fence: transactionFence
+        )
+        if transactionFence != nil {
+            transactionFenceSignaled = true
+        }
+
+        try modelBuffers.encodeResetEffective(
+            on: command,
+            fence: transactionFence,
+            waitsForFence: transactionFenceSignaled
+        )
+        if transactionFence != nil {
+            transactionFenceSignaled = true
+        }
         if let stagedOverlay, !stagedOverlay.overlay.isEmpty {
             guard let table = argumentTables[ObjectIdentifier(arena.shadow)] else {
                 clearOpenTransaction()
@@ -255,8 +391,13 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
                 argumentTable: table,
                 state: arena.shadow,
                 transient: arena.transient,
-                model: modelBuffers
+                model: modelBuffers,
+                fence: transactionFence,
+                waitsForFence: transactionFenceSignaled
             )
+            if transactionFence != nil {
+                transactionFenceSignaled = true
+            }
             activeOverlayBuffers = buffers
         }
     }
@@ -270,7 +411,8 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
               let modelBuffers,
               let biologyMetadata,
               let ring = phaseHeaderRing,
-              let command = commandBuffer else {
+              let command = commandBuffer,
+              let model else {
             throw MetalRuntimeError.noOpenTransaction
         }
         guard currentContext?.transaction == executionContext.transaction else {
@@ -283,6 +425,7 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
         var header = MetalSimulationHeader(
             state: arena.committedCPUState,
             context: executionContext,
+            fieldGridEdge: model.configuration.tile.fieldGridEdge,
             phase: phase,
             phaseRange: tickRange
         )
@@ -337,10 +480,19 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
             )
 
         case .deliverEvents:
-            let bucketCapacity = max(Int(header.eventCapacity) / 4_096, 1)
+            try encode(
+                kernel: .sortEventBucket,
+                count: 1,
+                header: header,
+                command: command,
+                ring: ring,
+                table: table,
+                state: arena.shadow,
+                transient: arena.transient
+            )
             try encode(
                 kernel: .deliverEvents,
-                count: bucketCapacity,
+                count: 1,
                 header: header,
                 command: command,
                 ring: ring,
@@ -353,6 +505,19 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
                     startingAt: 1
                 )
             )
+            if tickRange.upperBound > tickRange.lowerBound,
+               tickRange.upperBound.isMultiple(of: executionContext.cadence.routingBlockTicks) {
+                try encode(
+                    kernel: .clearEventBucket,
+                    count: 1,
+                    header: header,
+                    command: command,
+                    ring: ring,
+                    table: table,
+                    state: arena.shadow,
+                    transient: arena.transient
+                )
+            }
 
         case .decaySynapses:
             try encode(
@@ -423,6 +588,16 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
             try encode(
                 kernel: .routeSpikes,
                 count: Int(header.synapseCount),
+                header: header,
+                command: command,
+                ring: ring,
+                table: table,
+                state: arena.shadow,
+                transient: arena.transient
+            )
+            try encode(
+                kernel: .clearSpikeFlags,
+                count: Int(header.compartmentCount),
                 header: header,
                 command: command,
                 ring: ring,
@@ -867,12 +1042,24 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
     private func installMigratedState(
         _ state: TissueRuntimeState
     ) async throws {
-        guard let shaders = shaderLibrary else {
+        guard let shaders = shaderLibrary,
+              let activeArena = arena else {
             throw MetalRuntimeError.stateNotLoaded
         }
         var normalized = state
         normalized.reserveCapacity(normalized.capacity)
         try normalized.validateCapacity()
+
+        // A fidelity migration replaces the arena instead of swapping its buffers. The current
+        // transaction's event wheel is therefore still in the old shadow wheel; preserve that
+        // wheel against the migrated topology before publishing the replacement. Reading the old
+        // committed wheel here would silently drop events scheduled by this transaction.
+        let migratedEventWheel = try await activeArena.exportPersistentEventWheel(
+            state: normalized,
+            routingBlockTicks: checkpointRoutingBlockTicks ?? RuntimeCadence.routingBlockTicks,
+            minimumArrivalTick: normalized.time.tick,
+            wheel: activeArena.transient.shadowEventWheel
+        )
 
         let replacement = try MetalStateArena(
             context: context,
@@ -891,6 +1078,10 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
                 arena: replacement
             )
         )
+        try await replacement.importPersistentEventWheel(
+            migratedEventWheel,
+            state: normalized
+        )
 
         arena = replacement
         argumentTables = tables
@@ -906,14 +1097,16 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
             shaderLibrary: shaders,
             state: arena.committed,
             transient: arena.transient,
-            label: "NumiTissue.arguments.committed"
+            label: "NumiTissue.arguments.committed",
+            eventWheel: arena.transient.committedEventWheel
         )
         let shadow = try MetalArgumentTable(
             context: context,
             shaderLibrary: shaders,
             state: arena.shadow,
             transient: arena.transient,
-            label: "NumiTissue.arguments.shadow"
+            label: "NumiTissue.arguments.shadow",
+            eventWheel: arena.transient.shadowEventWheel
         )
         return [
             ObjectIdentifier(arena.committed): committed,
@@ -1021,6 +1214,9 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
             throw MetalRuntimeError.encoderCreationFailed("phaseHeader")
         }
         blit.label = "NumiTissue.header.\(kernel.rawValue)"
+        if let transactionFence, transactionFenceSignaled {
+            blit.waitForFence(transactionFence)
+        }
         blit.copy(
             from: ring.buffer,
             sourceOffset: offset,
@@ -1028,12 +1224,21 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
             destinationOffset: 0,
             size: MemoryLayout<MetalSimulationHeader>.stride
         )
+        if let transactionFence {
+            blit.updateFence(transactionFence)
+        }
         blit.endEncoding()
+        if transactionFence != nil {
+            transactionFenceSignaled = true
+        }
 
         guard let compute = command.makeComputeCommandEncoder() else {
             throw MetalRuntimeError.encoderCreationFailed(kernel.rawValue)
         }
         compute.label = "NumiTissue.\(kernel.rawValue)"
+        if let transactionFence, transactionFenceSignaled {
+            compute.waitForFence(transactionFence)
+        }
         compute.setBuffer(table.buffer, offset: 0, index: 0)
         for (buffer, index) in additionalBuffers {
             compute.setBuffer(buffer, offset: 0, index: index)
@@ -1050,7 +1255,13 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
         }
         let pipeline = try library.pipeline(kernel)
         compute.ntDispatch1D(count: count, pipeline: pipeline)
+        if let transactionFence {
+            compute.updateFence(transactionFence)
+        }
         compute.endEncoding()
+        if transactionFence != nil {
+            transactionFenceSignaled = true
+        }
     }
 
     private func ensureSubmitted() async throws {
@@ -1073,6 +1284,8 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
         stagedOverlay = nil
         activeOverlayBuffers = nil
         fidelityPreparationAttempted = false
+        transactionFence = nil
+        transactionFenceSignaled = false
     }
 
     private func clearPersistentTransientState(

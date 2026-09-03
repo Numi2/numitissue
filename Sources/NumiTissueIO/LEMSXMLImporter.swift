@@ -39,7 +39,7 @@ private final class LEMSParserDelegate: NSObject, XMLParserDelegate {
         didStartElement elementName: String,
         namespaceURI: String?,
         qualifiedName qName: String?,
-        attributes attributes: [String: String] = [:]
+        attributes: [String: String] = [:]
     ) {
         guard failure == nil else { return }
         let element = local(elementName)

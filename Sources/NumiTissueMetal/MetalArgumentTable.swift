@@ -244,9 +244,16 @@ public final class MetalModelBuffers: @unchecked Sendable {
         parameterTables.values.flatMap { [$0.baseline, $0.effective] }
     }
 
-    public func encodeResetEffective(on command: MTLCommandBuffer) throws {
+    public func encodeResetEffective(
+        on command: MTLCommandBuffer,
+        fence: MTLFence? = nil,
+        waitsForFence: Bool = false
+    ) throws {
         guard let blit = command.makeBlitCommandEncoder() else {
             throw MetalRuntimeError.encoderCreationFailed("resetEffectiveParameters")
+        }
+        if let fence, waitsForFence {
+            blit.waitForFence(fence)
         }
         for domain in parameterTables.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
             parameterTables[domain]?.encodeReset(on: blit)
@@ -258,6 +265,9 @@ public final class MetalModelBuffers: @unchecked Sendable {
             destinationOffset: 0,
             size: min(molecularReactionsBaseline.length, molecularReactions.length)
         )
+        if let fence {
+            blit.updateFence(fence)
+        }
         blit.endEncoding()
     }
 
@@ -306,18 +316,21 @@ public final class MetalModelBuffers: @unchecked Sendable {
 public final class MetalArgumentTable: @unchecked Sendable {
     public let buffer: MTLBuffer
     public let encoder: MTLArgumentEncoder
+    private let eventWheel: MetalEventWheelBuffers
 
     public init(
         context: MetalDeviceContext,
         shaderLibrary: MetalShaderLibrary,
         state: MetalStateBufferSet,
         transient: MetalTransientBuffers,
-        label: String
+        label: String,
+        eventWheel: MetalEventWheelBuffers? = nil
     ) throws {
         guard let function = shaderLibrary.library.makeFunction(name: MetalKernel.buildWorklists.rawValue) else {
             throw MetalRuntimeError.functionMissing(MetalKernel.buildWorklists.rawValue)
         }
         encoder = function.makeArgumentEncoder(bufferIndex: 0)
+        self.eventWheel = eventWheel ?? transient.shadowEventWheel
         guard let buffer = context.device.makeBuffer(length: encoder.encodedLength, options: .storageModeShared) else {
             throw MetalRuntimeError.bufferAllocationFailed(label: label, bytes: encoder.encodedLength)
         }
@@ -338,10 +351,10 @@ public final class MetalArgumentTable: @unchecked Sendable {
         encoder.setBuffer(state.molecularSpecies, offset: 0, index: 10)
         encoder.setBuffer(transient.inputEvents, offset: 0, index: 11)
         encoder.setBuffer(transient.stimuli, offset: 0, index: 12)
-        encoder.setBuffer(transient.localEvents, offset: 0, index: 13)
+        encoder.setBuffer(self.eventWheel.localEvents, offset: 0, index: 13)
         encoder.setBuffer(transient.outgoingEvents, offset: 0, index: 14)
         encoder.setBuffer(transient.outputEvents, offset: 0, index: 15)
-        encoder.setBuffer(transient.eventBucketCounts, offset: 0, index: 16)
+        encoder.setBuffer(self.eventWheel.eventBucketCounts, offset: 0, index: 16)
         encoder.setBuffer(transient.worklistCounts, offset: 0, index: 17)
         encoder.setBuffer(transient.electricalWorklist, offset: 0, index: 18)
         encoder.setBuffer(transient.fieldWorklist, offset: 0, index: 19)
@@ -358,8 +371,8 @@ public final class MetalArgumentTable: @unchecked Sendable {
     public func useResources(on encoder: MTLComputeCommandEncoder, state: MetalStateBufferSet, transient: MetalTransientBuffers) {
         encoder.useResources(state.all, usage: [.read, .write])
         encoder.useResources([
-            transient.header, transient.inputEvents, transient.stimuli, transient.localEvents,
-            transient.outgoingEvents, transient.outputEvents, transient.eventBucketCounts,
+            transient.header, transient.inputEvents, transient.stimuli, eventWheel.localEvents,
+            transient.outgoingEvents, transient.outputEvents, eventWheel.eventBucketCounts,
             transient.worklistCounts, transient.electricalWorklist, transient.fieldWorklist,
             transient.molecularWorklist, transient.mechanicsWorklist, transient.developmentWorklist,
             transient.fidelityWorklist, transient.validationRecords, transient.counters,

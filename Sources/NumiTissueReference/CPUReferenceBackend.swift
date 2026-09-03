@@ -34,12 +34,60 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
         self.molecularProgram = molecularProgram
     }
 
+    private func validateMolecularProgram(
+        model: CompiledTissueModel,
+        initialState: TissueRuntimeState
+    ) throws {
+        guard model.microdomainHeaders.count == initialState.microdomains.count else {
+            throw CPUReferenceBackendError.molecularProgramInvalid(
+                "compiled model has \(model.microdomainHeaders.count) molecular domain header(s), but the initial state has \(initialState.microdomains.count)"
+            )
+        }
+        guard !model.microdomainHeaders.isEmpty else { return }
+        guard !molecularProgram.networks.isEmpty else {
+            throw CPUReferenceBackendError.molecularProgramMissing
+        }
+        for (domainIndex, domain) in initialState.microdomains.enumerated() {
+            let networkIndex = Int(domain.reactionNetworkIndex)
+            guard networkIndex < molecularProgram.networks.count else {
+                throw CPUReferenceBackendError.molecularProgramInvalid(
+                    "domain \(domainIndex) references network \(networkIndex), but the program contains \(molecularProgram.networks.count)"
+                )
+            }
+            let network = molecularProgram.networks[networkIndex]
+            guard Int(domain.speciesRange.count) == network.speciesCount else {
+                throw CPUReferenceBackendError.molecularProgramInvalid(
+                    "domain \(domainIndex) has \(domain.speciesRange.count) species, but network \(networkIndex) requires \(network.speciesCount)"
+                )
+            }
+            let lower = Int(domain.speciesRange.lowerBound)
+            let count = Int(domain.speciesRange.count)
+            guard lower <= initialState.molecularSpecies.count,
+                  count <= initialState.molecularSpecies.count - lower else {
+                throw CPUReferenceBackendError.molecularProgramInvalid(
+                    "domain (domainIndex) species range is outside the molecular state pool"
+                )
+            }
+            for (reactionIndex, reaction) in network.reactions.enumerated() {
+                let terms = reaction.reactants + reaction.products
+                guard terms.allSatisfy({
+                    $0.coefficient > 0 && Int($0.species) < network.speciesCount
+                }) else {
+                    throw CPUReferenceBackendError.molecularProgramInvalid(
+                    "network \(networkIndex) reaction \(reactionIndex) references an invalid species or coefficient"
+                    )
+                }
+            }
+        }
+    }
+
     public func load(model: CompiledTissueModel, initialState: TissueRuntimeState) async throws {
         guard committed == nil else { throw RuntimeExecutionError.alreadyLoaded }
         try initialState.validateCapacity()
         let issues = validator.validate(initialState)
         let rejects = issues.filter { $0.severity == .reject }
         guard rejects.isEmpty else { throw RuntimeExecutionError.rejected(rejects) }
+        try validateMolecularProgram(model: model, initialState: initialState)
         self.model = model
         committed = initialState
         committedEventWheel = EventDelayWheel(
@@ -53,6 +101,10 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
         guard let committed, var wheel = committedEventWheel else {
             throw RuntimeExecutionError.notLoaded
         }
+        let validatedInput = try input.validated(
+            startTime: context.startTime,
+            cadence: context.cadence
+        )
         guard currentContext == nil else {
             throw RuntimeExecutionError.transactionInProgress
         }
@@ -79,7 +131,7 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
         stagedInterventionState = nil
         shadowEventWheel = wheel
         currentContext = context
-        self.input = input
+        self.input = validatedInput
         generatedEvents.removeAll(keepingCapacity: true)
         output = RuntimeOutputFrame(
             startTime: context.startTime,
@@ -94,7 +146,8 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
         tickRange: Range<UInt64>,
         context: ExecutionContext
     ) async throws {
-        guard currentContext?.transaction == context.transaction else {
+        guard currentContext?.transaction == context.transaction,
+              let model else {
             throw RuntimeExecutionError.staleTransaction
         }
         guard var state = shadow, var wheel = shadowEventWheel else {
@@ -146,7 +199,8 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
         case .updateChannels:
             CPUReferenceKernels.updateChannels(
                 state: &state,
-                dtMilliseconds: ticksToMilliseconds(tickRange.count)
+                dtMilliseconds: ticksToMilliseconds(tickRange.count),
+                thermalScales: model.mechanismSets.map(\.thermal.z)
             )
         case .solveCableTrees:
             try ReferenceCableTreeSolver.solve(
@@ -173,7 +227,10 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
         case .updateFastFields:
             CPUReferenceKernels.updateFields(
                 state: &state,
-                dtMilliseconds: ticksToMilliseconds(tickRange.count)
+                dtMilliseconds: ticksToMilliseconds(tickRange.count),
+                fieldEdge: Int(model.configuration.tile.fieldGridEdge),
+                fieldParameters: model.fieldParameters,
+                fastQuantumMilliseconds: Float(model.configuration.scheduler.fastQuantumMicroseconds) / 1_000
             )
         case .updateMolecularDomains:
             let firings = CPUReferenceMolecularSolver.step(
@@ -187,7 +244,10 @@ public actor CPUReferenceTissueBackend: NumiTissueExecutionBackend {
         case .updateGliaAndMetabolism:
             CPUReferenceKernels.updateGliaAndMetabolism(
                 state: &state,
-                dtSeconds: ticksToSeconds(tickRange.count)
+                dtSeconds: ticksToSeconds(tickRange.count),
+                fieldEdge: Int(model.configuration.tile.fieldGridEdge),
+                cellPrograms: model.cellPrograms,
+                glialPrograms: model.glialPrograms
             )
         case .applyPlasticity:
             CPUReferenceKernels.applyPlasticity(
@@ -435,6 +495,8 @@ public enum CPUReferenceBackendError: Error, Sendable, CustomStringConvertible {
     case overdueCommittedEvents(count: Int)
     case incompleteEventAdvance(expected: UInt64, actual: UInt64)
     case eventWheelStateMismatch(wheel: UInt64, committed: UInt64)
+    case molecularProgramMissing
+    case molecularProgramInvalid(String)
 
     public var description: String {
         switch self {
@@ -446,6 +508,10 @@ public enum CPUReferenceBackendError: Error, Sendable, CustomStringConvertible {
             return "Event wheel reached tick \(actual), but transaction requires tick \(expected)."
         case .eventWheelStateMismatch(let wheel, let committed):
             return "Event-wheel snapshot tick \(wheel) does not match committed tissue tick \(committed)."
+        case .molecularProgramMissing:
+            return "The compiled tissue model contains molecular domains but no CPU molecular program was provided."
+        case .molecularProgramInvalid(let detail):
+            return "The CPU molecular program does not match the compiled tissue model: \(detail)."
         }
     }
 }

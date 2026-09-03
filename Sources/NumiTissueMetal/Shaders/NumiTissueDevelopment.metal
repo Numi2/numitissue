@@ -165,8 +165,10 @@ kernel void nt_apply_plasticity(
     const float baseline = max(synapse.structuralReserved.y, minimumWeight);
     weight += dtSeconds * (effectiveLearningRate * modulator * eligibility - 1.0e-5f * (weight - baseline));
     synapse.weightConductanceUtilizationResources.x = clamp(weight, minimumWeight, maximumWeight);
-    const float baseQuantum = max(float(r.header->fastQuantumTicks) * NT_TICK_MILLISECONDS, NT_TICK_MILLISECONDS);
-    synapse.prePostEligibilityConsolidation.z *= pow(eligibilityDecay, max(r.header->dtMilliseconds / baseQuantum, 1.0f));
+    // Eligibility and trace decay is already applied by nt_decay_synapses for every fast
+    // quantum. Applying the transaction duration again here double-counts decay and makes the
+    // Metal backend diverge from the reference semantics at every commit.
+    (void)eligibilityDecay;
     synapse.prePostEligibilityConsolidation.w = nt_clamp01(consolidated + dtSeconds * max(fabs(eligibility * modulator) - 0.01f, 0.0f) * 0.001f);
 }
 

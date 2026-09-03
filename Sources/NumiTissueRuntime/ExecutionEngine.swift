@@ -108,6 +108,76 @@ public struct RuntimeInputFrame: Sendable, Codable {
     }
 }
 
+public extension RuntimeInputFrame {
+    /// Validates all host-provided values before a backend records a transaction. GPU kernels may
+    /// clamp biological values, but they must never be asked to interpret a non-finite event or
+    /// control scalar as a valid input.
+    func validated(
+        startTime: TissueTime,
+        cadence: RuntimeCadence
+    ) throws -> Self {
+        let (horizonWidth, overflow) = UInt64(4_096).multipliedReportingOverflow(
+            by: cadence.routingBlockTicks
+        )
+        guard !overflow,
+              startTime.tick <= UInt64.max - horizonWidth else {
+            throw EventRoutingError.invalidSnapshot("input delay-wheel horizon overflow")
+        }
+        let horizonEnd = startTime.tick + horizonWidth
+
+        for event in afferentEvents {
+            guard event.arrivalTick >= startTime.tick else {
+                throw EventRoutingError.eventInPast(
+                    arrival: event.arrivalTick,
+                    current: startTime.tick
+                )
+            }
+            guard event.arrivalTick < horizonEnd else {
+                throw EventRoutingError.horizonExceeded(
+                    arrival: event.arrivalTick,
+                    horizonEnd: horizonEnd
+                )
+            }
+            guard event.amplitude.isFinite else {
+                throw EventRoutingError.invalidSnapshot(
+                    "input event has non-finite amplitude"
+                )
+            }
+        }
+        for stimulus in stimuli {
+            guard stimulus.startTick >= startTime.tick else {
+                throw EventRoutingError.eventInPast(
+                    arrival: stimulus.startTick,
+                    current: startTime.tick
+                )
+            }
+            guard stimulus.startTick < horizonEnd else {
+                throw EventRoutingError.horizonExceeded(
+                    arrival: stimulus.startTick,
+                    horizonEnd: horizonEnd
+                )
+            }
+            guard stimulus.amplitude.isFinite else {
+                throw EventRoutingError.invalidSnapshot(
+                    "input stimulus has non-finite amplitude"
+                )
+            }
+        }
+
+        let controlsFinite = (0..<8).allSatisfy { index in
+            neuromodulators[index].isFinite &&
+                hormones[index].isFinite &&
+                metabolicBoundary[index].isFinite
+        }
+        guard controlsFinite else {
+            throw EventRoutingError.invalidSnapshot(
+                "input control frame contains a non-finite scalar"
+            )
+        }
+        return self
+    }
+}
+
 @frozen
 public struct RuntimeOutputFrame: Sendable, Codable {
     public var startTime: TissueTime
@@ -321,7 +391,7 @@ public actor NumiTissueRuntime {
         do {
             try await backend.beginShadowStep(context: context, input: input)
             try await executeSchedule(context: context)
-            var issues = try await backend.validateShadow(context: context)
+            let issues = try await backend.validateShadow(context: context)
             let rejects = issues.filter { $0.severity == .reject }
             guard rejects.isEmpty else {
                 await backend.rollbackShadow(context: context)

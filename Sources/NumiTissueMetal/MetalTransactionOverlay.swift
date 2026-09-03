@@ -144,13 +144,18 @@ public final class MetalTransactionOverlayBuffers: @unchecked Sendable {
         argumentTable: MetalArgumentTable,
         state: MetalStateBufferSet,
         transient: MetalTransientBuffers,
-        model: MetalModelBuffers
+        model: MetalModelBuffers,
+        fence: MTLFence? = nil,
+        waitsForFence: Bool = false
     ) throws {
         guard !overlay.records.isEmpty else { return }
         guard let encoder = command.makeComputeCommandEncoder() else {
             throw MetalRuntimeError.encoderCreationFailed("transactionOverlay")
         }
         encoder.label = "NumiTissue.transactionOverlay"
+        if let fence, waitsForFence {
+            encoder.waitForFence(fence)
+        }
         argumentTable.useResources(on: encoder, state: state, transient: transient)
         encoder.useResources([groups, records, parameters], usage: .read)
         encoder.useResources(model.allParameterBuffers, usage: [.read, .write])
@@ -183,6 +188,9 @@ public final class MetalTransactionOverlayBuffers: @unchecked Sendable {
                 MTLSize(width: 1, height: 1, depth: 1),
                 threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
             )
+        }
+        if let fence {
+            encoder.updateFence(fence)
         }
         encoder.endEncoding()
     }

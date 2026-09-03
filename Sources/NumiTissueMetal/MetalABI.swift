@@ -12,19 +12,46 @@ public enum MetalTissueABI {
     public static let invalidIndex = UInt32.max
 
     public static func validateHostLayout() throws {
-        let aligned16: [(String, Int)] = [
-            ("MetalSimulationHeader", MemoryLayout<MetalSimulationHeader>.stride),
-            ("MetalTileState", MemoryLayout<MetalTileState>.stride),
-            ("MetalCellState", MemoryLayout<MetalCellState>.stride),
-            ("MetalSegmentState", MemoryLayout<MetalSegmentState>.stride),
-            ("MetalCompartmentState", MemoryLayout<MetalCompartmentState>.stride),
-            ("MetalSynapseState", MemoryLayout<MetalSynapseState>.stride),
-            ("MetalEvent", MemoryLayout<MetalEvent>.stride),
-            ("MetalFieldState", MemoryLayout<MetalFieldState>.stride),
-            ("MetalMicrodomainState", MemoryLayout<MetalMicrodomainState>.stride)
+        // These values mirror sizeof/alignof in NumiTissueABI.metal. A multiple-of-16 check
+        // alone can accept a reordered field or a host-only padding change and corrupt every
+        // subsequent element in a private buffer.
+        let expected: [(name: String, size: Int, stride: Int, alignment: Int)] = [
+            ("MetalRange", 16, 16, 4),
+            ("MetalSimulationHeader", 224, 224, 16),
+            ("MetalTileState", 160, 160, 16),
+            ("MetalCellState", 144, 144, 16),
+            ("MetalSegmentState", 80, 80, 16),
+            ("MetalCompartmentState", 112, 112, 16),
+            ("MetalSynapseState", 80, 80, 16),
+            ("MetalEvent", 48, 48, 4),
+            ("MetalFieldState", 16, 16, 16),
+            ("MetalMicrodomainState", 80, 80, 16),
+            ("MetalValidationRecord", 32, 32, 4),
+            ("MetalRuntimeCounters", 64, 64, 4)
         ]
-        for (name, stride) in aligned16 where stride % 16 != 0 {
-            throw MetalRuntimeError.incompatibleGPU("Host ABI stride for \(name) is \(stride), expected a multiple of 16")
+        let actual: [(name: String, size: Int, stride: Int, alignment: Int)] = [
+            ("MetalRange", MemoryLayout<MetalRange>.size, MemoryLayout<MetalRange>.stride, MemoryLayout<MetalRange>.alignment),
+            ("MetalSimulationHeader", MemoryLayout<MetalSimulationHeader>.size, MemoryLayout<MetalSimulationHeader>.stride, MemoryLayout<MetalSimulationHeader>.alignment),
+            ("MetalTileState", MemoryLayout<MetalTileState>.size, MemoryLayout<MetalTileState>.stride, MemoryLayout<MetalTileState>.alignment),
+            ("MetalCellState", MemoryLayout<MetalCellState>.size, MemoryLayout<MetalCellState>.stride, MemoryLayout<MetalCellState>.alignment),
+            ("MetalSegmentState", MemoryLayout<MetalSegmentState>.size, MemoryLayout<MetalSegmentState>.stride, MemoryLayout<MetalSegmentState>.alignment),
+            ("MetalCompartmentState", MemoryLayout<MetalCompartmentState>.size, MemoryLayout<MetalCompartmentState>.stride, MemoryLayout<MetalCompartmentState>.alignment),
+            ("MetalSynapseState", MemoryLayout<MetalSynapseState>.size, MemoryLayout<MetalSynapseState>.stride, MemoryLayout<MetalSynapseState>.alignment),
+            ("MetalEvent", MemoryLayout<MetalEvent>.size, MemoryLayout<MetalEvent>.stride, MemoryLayout<MetalEvent>.alignment),
+            ("MetalFieldState", MemoryLayout<MetalFieldState>.size, MemoryLayout<MetalFieldState>.stride, MemoryLayout<MetalFieldState>.alignment),
+            ("MetalMicrodomainState", MemoryLayout<MetalMicrodomainState>.size, MemoryLayout<MetalMicrodomainState>.stride, MemoryLayout<MetalMicrodomainState>.alignment),
+            ("MetalValidationRecord", MemoryLayout<MetalValidationRecord>.size, MemoryLayout<MetalValidationRecord>.stride, MemoryLayout<MetalValidationRecord>.alignment),
+            ("MetalRuntimeCounters", MemoryLayout<MetalRuntimeCounters>.size, MemoryLayout<MetalRuntimeCounters>.stride, MemoryLayout<MetalRuntimeCounters>.alignment)
+        ]
+        for (expectedValue, actualValue) in zip(expected, actual) {
+            guard expectedValue.name == actualValue.name,
+                  expectedValue.size == actualValue.size,
+                  expectedValue.stride == actualValue.stride,
+                  expectedValue.alignment == actualValue.alignment else {
+                throw MetalRuntimeError.incompatibleGPU(
+                    "Host ABI mismatch for \(actualValue.name): size \(actualValue.size)/\(actualValue.stride), alignment \(actualValue.alignment); expected \(expectedValue.size)/\(expectedValue.stride), alignment \(expectedValue.alignment)"
+                )
+            }
         }
     }
 }
@@ -73,7 +100,13 @@ public struct MetalSimulationHeader: Sendable {
     public var reserved2: SIMD4<UInt32>
     public var reserved3: SIMD4<UInt32>
 
-    public init(state: TissueRuntimeState, context: ExecutionContext, phase: RuntimePhase = .ingestInputs, phaseRange: Range<UInt64>? = nil) {
+    public init(
+        state: TissueRuntimeState,
+        context: ExecutionContext,
+        fieldGridEdge: UInt32 = 32,
+        phase: RuntimePhase = .ingestInputs,
+        phaseRange: Range<UInt64>? = nil
+    ) {
         let range = phaseRange ?? context.startTime.tick..<context.endTime.tick
         abiVersion = MetalTissueABI.version
         flags = 0
@@ -97,9 +130,9 @@ public struct MetalSimulationHeader: Sendable {
         molecularSpeciesCount = UInt32(clamping: state.molecularSpecies.count)
         eventCapacity = UInt32(clamping: state.capacity.events)
         fieldChannels = 12
-        fieldGridWidth = 32
-        fieldGridHeight = 32
-        fieldGridDepth = 32
+        fieldGridWidth = fieldGridEdge
+        fieldGridHeight = fieldGridEdge
+        fieldGridDepth = fieldGridEdge
         fastQuantumTicks = UInt32(clamping: context.cadence.fastQuantumTicks)
         routingBlockTicks = UInt32(clamping: context.cadence.routingBlockTicks)
         transactionTicks = UInt32(clamping: context.cadence.transactionTicks)
@@ -108,7 +141,12 @@ public struct MetalSimulationHeader: Sendable {
         phaseStartTickHi = UInt32(truncatingIfNeeded: range.lowerBound >> 32)
         phaseEndTickLo = UInt32(truncatingIfNeeded: range.upperBound)
         phaseEndTickHi = UInt32(truncatingIfNeeded: range.upperBound >> 32)
-        dtMilliseconds = Float(context.cadence.fastQuantumTicks) * 0.025
+        // Every phase carries the duration of the range it covers. Fast quanta are one
+        // canonical 25-us tick, while block, glial, plasticity, mechanics, and development
+        // phases cover many such ticks. Reporting only the fast-quantum duration here silently
+        // under-integrated every non-fast kernel.
+        dtMilliseconds = Float(max(range.count, 1)) *
+            Float(TissueTime.quantumMicroseconds) * 0.001
         inverseDtMilliseconds = dtMilliseconds > 0 ? 1 / dtMilliseconds : 0
         temperatureKelvin = 310.15
         reservedFloat = 0

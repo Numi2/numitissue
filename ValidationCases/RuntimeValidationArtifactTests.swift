@@ -3,6 +3,39 @@ import XCTest
 import NumiTissue
 
 final class RuntimeValidationArtifactTests: XCTestCase {
+    func testFootprintCanonicalEncodingSortsPoolDictionaryKeys() throws {
+        var first: [RuntimeComparisonDomain: UInt64] = [:]
+        first[.pendingEvents] = 11
+        first[.tiles] = 22
+        first[.cells] = 33
+        var second: [RuntimeComparisonDomain: UInt64] = [:]
+        second[.cells] = 33
+        second[.tiles] = 22
+        second[.pendingEvents] = 11
+
+        let firstFootprint = RuntimeStateFootprint(
+            activeStateBytes: 66,
+            reservedStateBytes: 66,
+            bytesPerCell: 2,
+            bytesPerCompartment: nil,
+            bytesPerSynapse: nil,
+            poolBytes: first
+        )
+        let secondFootprint = RuntimeStateFootprint(
+            activeStateBytes: 66,
+            reservedStateBytes: 66,
+            bytesPerCell: 2,
+            bytesPerCompartment: nil,
+            bytesPerSynapse: nil,
+            poolBytes: second
+        )
+
+        XCTAssertEqual(
+            try ScientificCanonicalJSON.encode(firstFootprint),
+            try ScientificCanonicalJSON.encode(secondFootprint)
+        )
+    }
+
     func testBenchmarkArtifactRoundTripsAndVerifiesPayloadHash() throws {
         let report = makeBenchmarkReport()
         let artifact = try RuntimeValidationArtifactIO.makeBenchmark(

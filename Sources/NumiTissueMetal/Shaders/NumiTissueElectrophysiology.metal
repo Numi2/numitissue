@@ -187,7 +187,6 @@ kernel void nt_assemble_cable_system(
     r.mechanismState[base + 13u] = capacitance / dt * voltage + reversalSource + applied;
     r.mechanismState[base + 14u] = voltage;
     compartment.voltagePreviousCapacitanceAxial.y = voltage;
-    atomic_fetch_add_explicit(&r.counters->activeCompartments, 1u, memory_order_relaxed);
 }
 
 kernel void nt_eliminate_cable_levels(

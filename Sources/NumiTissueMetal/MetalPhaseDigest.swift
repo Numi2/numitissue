@@ -4,7 +4,6 @@ import Metal
 import NumiTissueCore
 import NumiTissueRuntime
 
-@frozen
 struct MetalDigestCounts: Sendable {
     var regulatoryStateCount: UInt32
     var mechanismStateCount: UInt32

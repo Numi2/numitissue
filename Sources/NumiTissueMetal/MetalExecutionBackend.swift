@@ -334,11 +334,15 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
         commandSubmitted = false
         fidelityPreparationAttempted = false
         retainedCounters = nil
-        guard let command = context.commandQueue.makeCommandBuffer() else {
+        let command: MTLCommandBuffer
+        do {
+            command = try context.makeCommandBuffer(
+                label: "NumiTissue.transaction.\(executionContext.transaction.rawValue)"
+            )
+        } catch {
             clearOpenTransaction()
-            throw MetalRuntimeError.commandBufferCreationFailed
+            throw error
         }
-        command.label = "NumiTissue.transaction.\(executionContext.transaction.rawValue)"
         commandBuffer = command
 
         if options.hazardMode == .untrackedWithExplicitBarriers {
@@ -1447,10 +1451,9 @@ extension MetalTissueBackend: RuntimePhaseInspectableBackend {
             throw RuntimeExecutionError.staleTransaction
         }
         guard commandBuffer == nil else { return }
-        guard let continuation = context.commandQueue.makeCommandBuffer() else {
-            throw MetalRuntimeError.commandBufferCreationFailed
-        }
-        continuation.label = "NumiTissue.transaction.\(executionContext.transaction.rawValue).inspection-continuation"
+        let continuation = try context.makeCommandBuffer(
+            label: "NumiTissue.transaction.\(executionContext.transaction.rawValue).inspection-continuation"
+        )
         commandBuffer = continuation
         commandSubmitted = false
     }

@@ -30,6 +30,14 @@ kernel void nt_build_worklists(
     if (nt_range_nonempty(tile.compartmentRange) && (activity >= 1.0e-5f || recentlyActive)) {
         const uint slot = atomic_fetch_add_explicit(&r.worklistCounts[NT_WORKLIST_ELECTRICAL], 1u, memory_order_relaxed);
         r.electricalWorklist[slot] = gid;
+        // RuntimeCounters are transaction-level observables. Count the same
+        // electrical compartments that the CPU reference records when it
+        // builds its worklists, rather than counting a later solver phase.
+        atomic_fetch_add_explicit(
+            &r.counters->activeCompartments,
+            tile.compartmentRange.count,
+            memory_order_relaxed
+        );
     }
     if (nt_range_nonempty(tile.fieldRange)) {
         const uint slot = atomic_fetch_add_explicit(&r.worklistCounts[NT_WORKLIST_FIELDS], 1u, memory_order_relaxed);

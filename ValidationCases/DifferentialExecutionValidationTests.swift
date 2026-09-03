@@ -212,16 +212,14 @@ final class DifferentialExecutionValidationTests: XCTestCase {
             DifferentialTransactionDisposition.failed.rawValue
         )
         XCTAssertTrue(report.failureDescription?.contains("validation.injected.channel") ?? false)
+        let referenceAfterFailure = try await reference.exportCommittedState()
+        let candidateAfterFailure = try await candidateBase.exportCommittedState()
         XCTAssertEqual(
-            RuntimeStateDigestBuilder.make(
-                state: try await reference.exportCommittedState()
-            ).combined,
+            RuntimeStateDigestBuilder.make(state: referenceAfterFailure).combined,
             initialDigest
         )
         XCTAssertEqual(
-            RuntimeStateDigestBuilder.make(
-                state: try await candidateBase.exportCommittedState()
-            ).combined,
+            RuntimeStateDigestBuilder.make(state: candidateAfterFailure).combined,
             initialDigest
         )
         let faults = await candidate.triggeredFaults()

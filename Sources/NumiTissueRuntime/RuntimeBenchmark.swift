@@ -10,6 +10,15 @@ public struct RuntimeStateFootprint: Sendable, Hashable, Codable {
     public var bytesPerSynapse: Double?
     public var poolBytes: [RuntimeComparisonDomain: UInt64]
 
+    private enum CodingKeys: String, CodingKey {
+        case activeStateBytes
+        case reservedStateBytes
+        case bytesPerCell
+        case bytesPerCompartment
+        case bytesPerSynapse
+        case poolBytes
+    }
+
     public init(
         activeStateBytes: UInt64,
         reservedStateBytes: UInt64,
@@ -24,6 +33,50 @@ public struct RuntimeStateFootprint: Sendable, Hashable, Codable {
         self.bytesPerCompartment = bytesPerCompartment
         self.bytesPerSynapse = bytesPerSynapse
         self.poolBytes = poolBytes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        activeStateBytes = try container.decode(UInt64.self, forKey: .activeStateBytes)
+        reservedStateBytes = try container.decode(UInt64.self, forKey: .reservedStateBytes)
+        bytesPerCell = try container.decodeIfPresent(Double.self, forKey: .bytesPerCell)
+        bytesPerCompartment = try container.decodeIfPresent(Double.self, forKey: .bytesPerCompartment)
+        bytesPerSynapse = try container.decodeIfPresent(Double.self, forKey: .bytesPerSynapse)
+
+        var encodedPool = try container.nestedUnkeyedContainer(forKey: .poolBytes)
+        var decodedPool: [RuntimeComparisonDomain: UInt64] = [:]
+        while !encodedPool.isAtEnd {
+            let domain = try encodedPool.decode(RuntimeComparisonDomain.self)
+            guard !encodedPool.isAtEnd else {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: encodedPool.codingPath,
+                    debugDescription: "Runtime footprint poolBytes has an unmatched domain"
+                ))
+            }
+            let bytes = try encodedPool.decode(UInt64.self)
+            guard decodedPool.updateValue(bytes, forKey: domain) == nil else {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: encodedPool.codingPath,
+                    debugDescription: "Runtime footprint poolBytes contains duplicate domain \(domain.rawValue)"
+                ))
+            }
+        }
+        poolBytes = decodedPool
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(activeStateBytes, forKey: .activeStateBytes)
+        try container.encode(reservedStateBytes, forKey: .reservedStateBytes)
+        try container.encodeIfPresent(bytesPerCell, forKey: .bytesPerCell)
+        try container.encodeIfPresent(bytesPerCompartment, forKey: .bytesPerCompartment)
+        try container.encodeIfPresent(bytesPerSynapse, forKey: .bytesPerSynapse)
+
+        var encodedPool = container.nestedUnkeyedContainer(forKey: .poolBytes)
+        for domain in poolBytes.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
+            try encodedPool.encode(domain)
+            try encodedPool.encode(poolBytes[domain] ?? 0)
+        }
     }
 }
 
@@ -254,10 +307,11 @@ public struct RuntimeBenchmarkStatistics: Sendable, Hashable, Codable {
         p95Nanoseconds = Self.percentile(ordered, probability: 0.95)
         p99Nanoseconds = Self.percentile(ordered, probability: 0.99)
         maximumNanoseconds = ordered[ordered.count - 1]
-        meanNanoseconds = ordered.reduce(0) { $0 + Double($1) } / Double(ordered.count)
+        let mean = ordered.reduce(0) { $0 + Double($1) } / Double(ordered.count)
+        meanNanoseconds = mean
         if ordered.count > 1 {
             standardDeviationNanoseconds = sqrt(ordered.reduce(0) {
-                let delta = Double($1) - meanNanoseconds
+                let delta = Double($1) - mean
                 return $0 + delta * delta
             } / Double(ordered.count - 1))
         } else {

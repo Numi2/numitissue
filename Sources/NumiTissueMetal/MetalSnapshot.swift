@@ -33,8 +33,10 @@ public extension MetalStateArena {
         guard let blit = command.makeBlitCommandEncoder() else {
             throw MetalRuntimeError.encoderCreationFailed(label)
         }
+        context.telemetry.recordBlitEncoder()
 
         var staging: [MTLBuffer] = []
+        var readbackBytes = 0
         func stage(source: MTLBuffer, bytes: Int, name: String) throws -> MTLBuffer {
             let length = max(bytes, 1)
             let target = try context.makeSharedBuffer(
@@ -49,6 +51,7 @@ public extension MetalStateArena {
                     destinationOffset: 0,
                     size: bytes
                 )
+                readbackBytes += bytes
             }
             staging.append(target)
             return target
@@ -65,7 +68,8 @@ public extension MetalStateArena {
         let microdomainStage = try stage(source: buffers.microdomains, bytes: template.microdomains.count * MemoryLayout<MetalMicrodomainState>.stride, name: "microdomains")
         let molecularStage = try stage(source: buffers.molecularSpecies, bytes: template.molecularSpecies.count * MemoryLayout<Float>.stride, name: "molecular")
         blit.endEncoding()
-        try await context.awaitCompletion(command)
+        context.telemetry.recordReadback(bytes: readbackBytes)
+        try await context.awaitCompletion(MetalCommandBufferHandle(command))
 
         var state = template
         state.tiles = Self.read(MetalTileState.self, from: tileStage, count: template.tiles.count).map(\.runtimeState)

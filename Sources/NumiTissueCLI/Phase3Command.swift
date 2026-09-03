@@ -118,7 +118,9 @@ struct Phase3Command {
             throw Phase3CLIError.invalidManifest("full repository revision is required")
         }
 
-        let root = url.standardizedFileURL.deletingLastPathComponent()
+        let root = canonicalFileURL(
+            url.standardizedFileURL.deletingLastPathComponent()
+        )
         guard let artifacts = object["artifacts"] as? [[String: Any]] else {
             throw Phase3CLIError.invalidManifest("artifacts are required")
         }
@@ -311,6 +313,25 @@ struct Phase3Command {
             result.appendPathComponent(component, isDirectory: false)
             if isSymlink(result) {
                 throw Phase3CLIError.invalidManifest("evidence path traverses a symlink")
+            }
+        }
+        return result
+    }
+
+    /// URL.resolvingSymlinksInPath() does not canonicalize the /tmp alias on
+    /// every Apple platform. Resolve each existing path component explicitly
+    /// so enumerated evidence paths and the root use the same spelling.
+    private static func canonicalFileURL(_ url: URL) -> URL {
+        var result = URL(fileURLWithPath: "/", isDirectory: true)
+        for component in url.standardizedFileURL.pathComponents where component != "/" {
+            result.appendPathComponent(component, isDirectory: true)
+            if let destination = try? FileManager.default.destinationOfSymbolicLink(
+                atPath: result.path
+            ) {
+                result = destination.hasPrefix("/")
+                    ? URL(fileURLWithPath: destination, isDirectory: true)
+                    : result.deletingLastPathComponent()
+                        .appendingPathComponent(destination, isDirectory: true)
             }
         }
         return result

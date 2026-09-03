@@ -54,7 +54,8 @@ public struct StandardVersionContract: Codable, Sendable, Hashable {
               components.scheme == "https",
               components.host?.isEmpty == false,
               referenceImplementation?.isEmpty != true,
-              referenceImplementationVersion?.isEmpty != true else {
+              referenceImplementationVersion?.isEmpty != true,
+              notes?.isEmpty != true else {
             throw StandardConformanceError.invalidVersionContract(standard)
         }
         return self
@@ -102,14 +103,17 @@ public struct StandardFeatureConformance: Codable, Sendable, Hashable {
     }
 
     public func validated() throws -> Self {
-        let identifier = featureID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !identifier.isEmpty,
-              identifier == featureID,
+        let trimmedID = featureID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedID.isEmpty,
+              trimmedID == featureID,
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               implementationSymbols.allSatisfy({ !$0.isEmpty }),
               evidenceCaseIDs.allSatisfy({ !$0.isEmpty }),
               Set(implementationSymbols).count == implementationSymbols.count,
-              Set(evidenceCaseIDs).count == evidenceCaseIDs.count else {
+              Set(evidenceCaseIDs).count == evidenceCaseIDs.count,
+              approximation?.isEmpty != true,
+              rejectionReason?.isEmpty != true,
+              notes?.isEmpty != true else {
             throw StandardConformanceError.invalidFeature(stableIdentifier)
         }
 
@@ -124,7 +128,7 @@ public struct StandardFeatureConformance: Codable, Sendable, Hashable {
         case .loweredWithDeclaredApproximation:
             guard implementationPath != .none,
                   !implementationSymbols.isEmpty,
-                  approximation?.isEmpty == false,
+                  approximation != nil,
                   rejectionReason == nil else {
                 throw StandardConformanceError.invalidFeature(stableIdentifier)
             }
@@ -137,7 +141,7 @@ public struct StandardFeatureConformance: Codable, Sendable, Hashable {
         case .rejected:
             guard implementationPath == .none,
                   implementationSymbols.isEmpty,
-                  rejectionReason?.isEmpty == false else {
+                  rejectionReason != nil else {
                 throw StandardConformanceError.invalidFeature(stableIdentifier)
             }
         }
@@ -196,17 +200,14 @@ public struct StandardConformanceMatrix: Codable, Sendable, Hashable {
               metadata.keys.allSatisfy({ !$0.isEmpty }) else {
             throw StandardConformanceError.invalidMatrix
         }
-        for contract in standards {
-            _ = try contract.validated()
-        }
-        for feature in features {
-            _ = try feature.validated()
-        }
+        for contract in standards { _ = try contract.validated() }
+        for feature in features { _ = try feature.validated() }
         guard Set(standards.map(\.standard)).count == standards.count else {
             throw StandardConformanceError.duplicateStandard
         }
         let declared = Set(standards.map(\.standard))
-        guard features.allSatisfy({ declared.contains($0.standard) }) else {
+        guard declared == Set(ScientificInterchangeStandard.allCases),
+              features.allSatisfy({ declared.contains($0.standard) }) else {
             throw StandardConformanceError.undeclaredFeatureStandard
         }
         let identifiers = features.map(\.stableIdentifier)
@@ -241,57 +242,8 @@ public enum NumiTissueStandardConformance {
     public static var phase4Baseline: StandardConformanceMatrix {
         StandardConformanceMatrix(
             catalogVersion: "phase4-2026.09",
-            standards: [
-                StandardVersionContract(
-                    standard: .swc,
-                    specificationVersion: "INCF SWC specification",
-                    specificationURI: "https://swc-specification.readthedocs.io/en/latest/swc.html",
-                    referenceImplementation: "INCF/swc-specification",
-                    referenceImplementationVersion: "67a18f96db524d03430f15936755a79ce68c23be"
-                ),
-                StandardVersionContract(
-                    standard: .neuroML,
-                    specificationVersion: "2.3",
-                    specificationURI: "https://docs.neuroml.org/Userdocs/NeuroMLv2.html",
-                    referenceImplementation: "NeuroML/NeuroML2",
-                    referenceImplementationVersion: "a5f5dadccd23606e683eaa0dd58dd2c3b2a7ed58"
-                ),
-                StandardVersionContract(
-                    standard: .lems,
-                    specificationVersion: "0.7.6",
-                    specificationURI: "https://docs.neuroml.org/Userdocs/LEMSSchema.html",
-                    referenceImplementation: "NeuroML/LEMS",
-                    referenceImplementationVersion: "0.7.6"
-                ),
-                StandardVersionContract(
-                    standard: .sonata,
-                    specificationVersion: "1.x",
-                    specificationURI: "https://github.com/AllenInstitute/sonata/blob/master/docs/SONATA_DEVELOPER_GUIDE.md",
-                    referenceImplementation: "AllenInstitute/sonata",
-                    referenceImplementationVersion: "51f247bb58bec6264f5d20d31b25ddf40d5c6eb6"
-                ),
-                StandardVersionContract(
-                    standard: .sbml,
-                    specificationVersion: "Level 3 Version 2 Core Release 2",
-                    specificationURI: "https://sbml.org/documents/specifications/level-3/version-2/core/release-2/",
-                    referenceImplementation: "libSBML"
-                ),
-                StandardVersionContract(
-                    standard: .nmodl,
-                    specificationVersion: "restricted NEURON NMODL subset",
-                    specificationURI: "https://nrn.readthedocs.io/en/latest/nmodl/index.html",
-                    referenceImplementation: "NEURON NMODL",
-                    notes: "NMODL has no single interchange-version number; NumiTissue publishes an executable subset contract."
-                ),
-                StandardVersionContract(
-                    standard: .nwb,
-                    specificationVersion: "2.10.0",
-                    specificationURI: "https://nwb-schema.readthedocs.io/en/stable/format.html",
-                    referenceImplementation: "PyNWB",
-                    referenceImplementationVersion: "4.1.0"
-                )
-            ],
-            features: phase4Features,
+            standards: versionContracts,
+            features: featureContracts,
             metadata: [
                 "authority": "NumiTissueIO",
                 "native-contract": "source-symbols plus executable validation cases",
@@ -301,7 +253,60 @@ public enum NumiTissueStandardConformance {
         )
     }
 
-    private static var phase4Features: [StandardFeatureConformance] {
+    private static var versionContracts: [StandardVersionContract] {
+        [
+            StandardVersionContract(
+                standard: .swc,
+                specificationVersion: "INCF SWC specification",
+                specificationURI: "https://swc-specification.readthedocs.io/en/latest/swc.html",
+                referenceImplementation: "INCF/swc-specification",
+                referenceImplementationVersion: "67a18f96db524d03430f15936755a79ce68c23be"
+            ),
+            StandardVersionContract(
+                standard: .neuroML,
+                specificationVersion: "2.3",
+                specificationURI: "https://docs.neuroml.org/Userdocs/NeuroMLv2.html",
+                referenceImplementation: "NeuroML/NeuroML2",
+                referenceImplementationVersion: "a5f5dadccd23606e683eaa0dd58dd2c3b2a7ed58"
+            ),
+            StandardVersionContract(
+                standard: .lems,
+                specificationVersion: "0.7.6",
+                specificationURI: "https://docs.neuroml.org/Userdocs/LEMSSchema.html",
+                referenceImplementation: "NeuroML/LEMS",
+                referenceImplementationVersion: "0.7.6"
+            ),
+            StandardVersionContract(
+                standard: .sonata,
+                specificationVersion: "1.x",
+                specificationURI: "https://github.com/AllenInstitute/sonata/blob/master/docs/SONATA_DEVELOPER_GUIDE.md",
+                referenceImplementation: "AllenInstitute/sonata",
+                referenceImplementationVersion: "51f247bb58bec6264f5d20d31b25ddf40d5c6eb6"
+            ),
+            StandardVersionContract(
+                standard: .sbml,
+                specificationVersion: "Level 3 Version 2 Core Release 2",
+                specificationURI: "https://sbml.org/documents/specifications/level-3/version-2/core/release-2/",
+                referenceImplementation: "libSBML"
+            ),
+            StandardVersionContract(
+                standard: .nmodl,
+                specificationVersion: "restricted NEURON NMODL subset",
+                specificationURI: "https://nrn.readthedocs.io/en/latest/nmodl/index.html",
+                referenceImplementation: "NEURON NMODL",
+                notes: "NMODL has no single interchange-version number; NumiTissue publishes an executable subset contract."
+            ),
+            StandardVersionContract(
+                standard: .nwb,
+                specificationVersion: "2.10.0",
+                specificationURI: "https://nwb-schema.readthedocs.io/en/stable/format.html",
+                referenceImplementation: "PyNWB",
+                referenceImplementationVersion: "4.1.0"
+            )
+        ]
+    }
+
+    private static var featureContracts: [StandardFeatureConformance] {
         [
             feature(.swc, "seven-column-tree", "Seven-column morphology tree", .supported, .native,
                     ["SWCImporter.parse", "SWCMorphology.validated", "SWCExporter.encode"],
@@ -317,7 +322,7 @@ public enum NumiTissueStandardConformance {
                     notes: "Unknown extension comments remain available as metadata; they do not alter runtime topology."),
 
             feature(.neuroML, "morphology", "Cells, segments, segment groups and inclusions", .supported, .native,
-                    ["NeuroMLImporter.parse", "NeuroMLCell.asSWC", "CircuitRuntimeCompiler"],
+                    ["NeuroMLImporter.parse", "NeuroMLCell.asSWC", "CircuitRuntimeCompiler.compile"],
                     ["phase4.neuroml.morphology"]),
             feature(.neuroML, "passive-properties", "Specific capacitance and axial resistivity", .preservedNotExecutable, .native,
                     ["NeuroMLCell.specificCapacitance", "NeuroMLCell.resistivity"],
@@ -326,28 +331,28 @@ public enum NumiTissueStandardConformance {
             feature(.neuroML, "channel-density", "Channel density variants", .preservedNotExecutable, .native,
                     ["NeuroMLChannelDensity", "NeuroMLImporter.parse"],
                     ["phase4.neuroml.channel-density"],
-                    notes: "Channel-density declarations are parsed and preserved but are not yet compiled into the authoritative mechanism tables."),
+                    notes: "Declarations are parsed and preserved but are not yet compiled into authoritative mechanism tables."),
             feature(.neuroML, "include-declarations", "External include declarations", .preservedNotExecutable, .native,
                     ["NeuroMLDocument.includes", "NeuroMLImporter.parse"],
                     ["phase4.neuroml.includes"],
-                    notes: "Include paths are preserved; recursive external resolution is delegated to the corpus materialization boundary."),
+                    notes: "Include paths are preserved; recursive resolution belongs to corpus materialization."),
 
             feature(.lems, "dimensions-units", "Dimensions and units", .supported, .native,
-                    ["LEMSXMLImporter.parse", "LEMSDimensionDefinition", "LEMSUnitDefinition"],
+                    ["LEMSXMLImporter.parse", "LEMSDimension", "LEMSUnitDefinition"],
                     ["phase4.lems.units"]),
             feature(.lems, "component-types", "Component types, parameters and state variables", .preservedNotExecutable, .native,
                     ["LEMSComponentTypeDefinition", "LEMSDynamicsDefinition"],
                     ["phase4.lems.component-type"],
-                    notes: "Component definitions are parsed and validated; general LEMS component execution is not yet an authoritative runtime path."),
-            feature(.lems, "continuous-event-dynamics", "First-order derivatives, regimes and event transitions", .preservedNotExecutable, .native,
+                    notes: "Definitions are parsed and validated; general LEMS component execution is not an authoritative runtime path."),
+            feature(.lems, "continuous-event-dynamics", "Derivatives, regimes and event transitions", .preservedNotExecutable, .native,
                     ["LEMSTimeDerivativeDefinition", "LEMSRegimeDefinition", "LEMSOnConditionDefinition", "LEMSOnEventDefinition"],
                     ["phase4.lems.dynamics"],
-                    notes: "Dynamics are preserved as an interchange model but require explicit lowering before execution."),
+                    notes: "Dynamics remain portable interchange state until explicitly lowered."),
             feature(.lems, "arbitrary-procedural-code", "Embedded procedural or host-language code", .rejected, .none,
-                    rejectionReason: "The portable expression and mechanism IR intentionally exclude arbitrary executable host code."),
+                    rejectionReason: "The portable expression and mechanism IR exclude arbitrary executable host code."),
 
-            feature(.sonata, "configuration-json", "Manifest substitution and simulation configuration", .supported, .native,
-                    ["SONATAConfiguration", "SONATAConfigurationLoader"],
+            feature(.sonata, "configuration-json", "Manifest substitution and circuit configuration", .supported, .native,
+                    ["SONATACircuitConfiguration", "SONATAConfigurationLoader.load"],
                     ["phase4.sonata.configuration"]),
             feature(.sonata, "in-memory-nodes-edges", "Typed node and edge records", .supported, .native,
                     ["SONATANodePopulation", "SONATAEdgePopulation", "CircuitRuntimeCompiler.compileSONATA"],
@@ -355,31 +360,31 @@ public enum NumiTissueStandardConformance {
             feature(.sonata, "hdf5-node-edge-store", "SONATA HDF5 node and edge tables", .supported, .sidecar,
                     ["Tools/numitissue-reference/numitissue_reference.py"],
                     ["phase4.sonata.sidecar-contract"],
-                    notes: "The Swift runtime consumes canonical records; HDF5 materialization is delegated to a pinned reference sidecar."),
+                    notes: "The Swift runtime consumes canonical records; HDF5 materialization is delegated to a pinned sidecar."),
             feature(.sonata, "reports", "SONATA simulation reports and spike files", .preservedNotExecutable, .sidecar,
                     ["Tools/numitissue-reference/numitissue_reference.py"],
-                    notes: "Reports are evidence inputs and are not interpreted as executable network definitions."),
+                    notes: "Reports are evidence inputs and are not interpreted as executable circuit definitions."),
 
             feature(.sbml, "core-model", "Compartments, species, parameters and reactions", .supported, .native,
-                    ["SBMLXMLImporter.parse", "SBMLDocument", "MolecularProgramIR"],
+                    ["SBMLXMLImporter.parse", "SBMLDocumentModel", "SBMLToMolecularIRCompiler.compile", "MolecularProgramIR"],
                     ["phase4.sbml.core"]),
             feature(.sbml, "mathml-subset", "Portable MathML expression subset", .supported, .native,
-                    ["PortableExpressionIR", "SBMLXMLImporter"],
+                    ["PortableExpressionIR", "SBMLXMLImporter.parse"],
                     ["phase4.sbml.mathml"]),
-            feature(.sbml, "rules", "Assignment and rate rules", .loweredWithDeclaredApproximation, .native,
-                    ["SBMLAssignmentRule", "SBMLRateRule", "MolecularObservableIR"],
+            feature(.sbml, "assignments-rules", "Initial assignments and assignment rules", .loweredWithDeclaredApproximation, .native,
+                    ["SBMLInitialAssignmentDefinition", "SBMLAssignmentRuleDefinition", "MolecularObservableIR"],
                     ["phase4.sbml.rules"],
-                    approximation: "Rules are lowered into the portable expression and molecular program IR. Unsupported evaluation ordering or package semantics are rejected."),
+                    approximation: "Supported assignments lower into initial symbols and portable observables. Unsupported ordering or package semantics are rejected."),
             feature(.sbml, "level3-packages", "Arbitrary SBML Level 3 package semantics", .rejected, .none,
                     rejectionReason: "Only declared core constructs and explicitly implemented package subsets may execute."),
 
             feature(.nmodl, "mechanism-blocks", "NEURON, PARAMETER, STATE, ASSIGNED and executable mechanism blocks", .supported, .native,
-                    ["NMODLImporter", "NMODLCompiler", "MechanismBytecodeCompiler"],
+                    ["NMODLImporter.parse", "NMODLCompiler.compile", "MechanismBytecodeCompiler.compile"],
                     ["phase4.nmodl.mechanism"]),
             feature(.nmodl, "derivative-kinetic", "Restricted DERIVATIVE and KINETIC integration", .loweredWithDeclaredApproximation, .native,
-                    ["MechanismIR", "MechanismBytecode"],
+                    ["MechanismModelIR", "MechanismBytecode", "MechanismBytecodeCompiler.compile"],
                     ["phase4.nmodl.integration"],
-                    approximation: "Supported equations are lowered to bounded NumiTissue bytecode integrators with explicit state layout and solver selection."),
+                    approximation: "Supported equations lower to bounded bytecode integrators with explicit state layout and solver selection."),
             feature(.nmodl, "verbatim-pointer", "VERBATIM, POINTER and arbitrary external linkage", .rejected, .none,
                     rejectionReason: "Arbitrary native code and external memory references violate portability, determinism and GPU safety."),
 
@@ -389,7 +394,7 @@ public enum NumiTissueStandardConformance {
             feature(.nwb, "session-metadata", "Session, subject, device and provenance metadata", .supported, .sidecar,
                     ["Tools/numitissue-nwb/numitissue_nwb.py"],
                     ["phase4.nwb.metadata"]),
-            feature(.nwb, "electrodes-units-events", "Electrodes, units, spike times and EventsTable", .supported, .sidecar,
+            feature(.nwb, "electrodes-units-events", "Electrodes, units, spike times and interval tables", .supported, .sidecar,
                     ["Tools/numitissue-nwb/numitissue_nwb.py"],
                     ["phase4.nwb.neural-data"]),
             feature(.nwb, "bounded-timeseries", "Bounded time-series extraction", .supported, .sidecar,
@@ -444,7 +449,7 @@ public enum StandardConformanceError: Error, Sendable, CustomStringConvertible {
         case .duplicateStandard:
             return "The conformance matrix declares a standard more than once."
         case .undeclaredFeatureStandard:
-            return "A conformance feature references an undeclared standard."
+            return "A conformance feature references an undeclared or missing standard."
         case .duplicateFeature:
             return "The conformance matrix contains duplicate feature identifiers."
         }

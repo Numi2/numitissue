@@ -114,8 +114,10 @@ public enum Metal4StateEncoder {
         )
     }
 
-    /// Clears transaction-scoped storage while preserving the copied delayed-event wheel. Event
-    /// buckets are committed state and therefore must not be zeroed at normal transaction start.
+    /// Clears only private transaction scratch. Shared counters, validation records, and control
+    /// scalars are reset on the CPU before submission; clearing them again on the GPU would erase
+    /// the neuromodulator and hormone frame written into `outputScalars` for this transaction.
+    /// Delayed-event buckets are committed state and are never cleared here.
     public static func resetTransactionTransientState(
         arena: MetalStateArena,
         session: Metal4EncodingSession
@@ -123,17 +125,12 @@ public enum Metal4StateEncoder {
         let transient = arena.transient
         let operations: [Metal4BufferFill] = [
             fill(transient.outgoingEvents),
-            fill(transient.outputEvents),
-            fill(transient.worklistCounts),
             fill(transient.electricalWorklist),
             fill(transient.fieldWorklist),
             fill(transient.molecularWorklist),
             fill(transient.mechanicsWorklist),
             fill(transient.developmentWorklist),
             fill(transient.fidelityWorklist),
-            fill(transient.validationRecords),
-            fill(transient.counters),
-            fill(transient.outputScalars),
             fill(transient.indirectDispatch)
         ]
         try session.encodeFills(

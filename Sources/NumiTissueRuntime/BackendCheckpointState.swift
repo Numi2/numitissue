@@ -51,10 +51,14 @@ public struct RuntimeBackendCheckpointEnvelope: Sendable, Hashable, Codable {
 }
 
 /// A backend that can preserve all state needed for deterministic continuation across a process
-/// boundary. Implementations must export committed state only and reject restore during an open
-/// transaction.
+/// boundary. Validation must be non-mutating so a malformed or incompatible checkpoint can be
+/// rejected before the backend adopts its biological state.
 public protocol RuntimeBackendCheckpointStateProvider: NumiTissueExecutionBackend {
     var checkpointBackendIdentifier: String { get }
+    func validateBackendCheckpointState(
+        _ data: Data,
+        committedState: TissueRuntimeState
+    ) async throws
     func exportBackendCheckpointState() async throws -> Data
     func restoreBackendCheckpointState(_ data: Data) async throws
 }

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Lems>
+  <Dimension name="time" t="1"/>
+  <Dimension name="voltage" m="1" l="2" t="-3" i="-1"/>
+  <Unit symbol="ms" dimension="time" power="-3"/>
+  <Unit symbol="mV" dimension="voltage" power="-3"/>
+  <ComponentType name="Phase4Cell">
+    <Parameter name="tau" dimension="time"/>
+    <StateVariable name="v" dimension="voltage"/>
+    <Dynamics>
+      <TimeDerivative variable="v" value="-v/tau"/>
+      <OnStart>
+        <StateAssignment variable="v" value="-65"/>
+      </OnStart>
+      <OnCondition test="v .gt. -20">
+        <StateAssignment variable="v" value="-65"/>
+      </OnCondition>
+      <Regime name="resting" initial="true">
+        <TimeDerivative variable="v" value="-v/tau"/>
+      </Regime>
+    </Dynamics>
+  </ComponentType>
+</Lems>

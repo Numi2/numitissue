@@ -118,6 +118,42 @@ public struct Metal4HazardTracker: Sendable {
 }
 
 @available(macOS 26.0, iOS 26.0, macCatalyst 26.0, tvOS 26.0, visionOS 26.0, *)
+public struct Metal4BufferCopy: @unchecked Sendable {
+    public var source: MTLBuffer
+    public var sourceOffset: Int
+    public var destination: MTLBuffer
+    public var destinationOffset: Int
+    public var size: Int
+
+    public init(
+        source: MTLBuffer,
+        sourceOffset: Int = 0,
+        destination: MTLBuffer,
+        destinationOffset: Int = 0,
+        size: Int
+    ) {
+        self.source = source
+        self.sourceOffset = sourceOffset
+        self.destination = destination
+        self.destinationOffset = destinationOffset
+        self.size = size
+    }
+}
+
+@available(macOS 26.0, iOS 26.0, macCatalyst 26.0, tvOS 26.0, visionOS 26.0, *)
+public struct Metal4BufferFill: @unchecked Sendable {
+    public var buffer: MTLBuffer
+    public var range: Range<Int>
+    public var value: UInt8
+
+    public init(buffer: MTLBuffer, range: Range<Int>, value: UInt8) {
+        self.buffer = buffer
+        self.range = range
+        self.value = value
+    }
+}
+
+@available(macOS 26.0, iOS 26.0, macCatalyst 26.0, tvOS 26.0, visionOS 26.0, *)
 public struct Metal4EncodingStatistics: Sendable, Hashable, Codable {
     public var commandCount: Int
     public var dispatchCount: Int
@@ -178,35 +214,46 @@ public final class Metal4EncodingSession: @unchecked Sendable {
         size: Int,
         access: Metal4CommandAccess
     ) throws {
-        try ensureCanEncode()
-        guard size > 0,
-              sourceOffset >= 0,
-              destinationOffset >= 0,
-              sourceOffset <= source.length - min(size, source.length),
-              destinationOffset <= destination.length - min(size, destination.length),
-              size <= source.length - sourceOffset,
-              size <= destination.length - destinationOffset else {
-            throw Metal4EncodingError.invalidCopyRange(
-                sourceLength: source.length,
-                sourceOffset: sourceOffset,
-                destinationLength: destination.length,
-                destinationOffset: destinationOffset,
-                size: size
-            )
+        try encodeCopies(
+            [
+                Metal4BufferCopy(
+                    source: source,
+                    sourceOffset: sourceOffset,
+                    destination: destination,
+                    destinationOffset: destinationOffset,
+                    size: size
+                )
+            ],
+            access: access
+        )
+    }
+
+    /// Encodes several byte copies as one semantic operation. The access graph is evaluated once,
+    /// so copying all structure-of-arrays pools does not insert barriers between independent buffers.
+    public func encodeCopies(
+        _ operations: [Metal4BufferCopy],
+        access: Metal4CommandAccess
+    ) throws {
+        guard !operations.isEmpty else { return }
+        try ensureCanEncode(additionalCommands: operations.count)
+        for operation in operations {
+            try validate(operation)
         }
         try prepare(access)
-        lease.encoder.copy(
-            sourceBuffer: source,
-            sourceOffset: sourceOffset,
-            destinationBuffer: destination,
-            destinationOffset: destinationOffset,
-            size: size
-        )
-        lease.retain(source)
-        lease.retain(destination)
-        statisticsValue.commandCount += 1
-        statisticsValue.blitCount += 1
-        telemetry.recordBlit()
+        for operation in operations {
+            lease.encoder.copy(
+                sourceBuffer: operation.source,
+                sourceOffset: operation.sourceOffset,
+                destinationBuffer: operation.destination,
+                destinationOffset: operation.destinationOffset,
+                size: operation.size
+            )
+            lease.retain(operation.source)
+            lease.retain(operation.destination)
+            telemetry.recordBlit()
+        }
+        statisticsValue.commandCount += operations.count
+        statisticsValue.blitCount += operations.count
     }
 
     public func encodeFill(
@@ -215,21 +262,35 @@ public final class Metal4EncodingSession: @unchecked Sendable {
         value: UInt8,
         access: Metal4CommandAccess
     ) throws {
-        try ensureCanEncode()
-        guard !range.isEmpty,
-              range.lowerBound >= 0,
-              range.upperBound <= buffer.length else {
-            throw Metal4EncodingError.invalidFillRange(
-                bufferLength: buffer.length,
-                range: range
-            )
+        try encodeFills(
+            [Metal4BufferFill(buffer: buffer, range: range, value: value)],
+            access: access
+        )
+    }
+
+    /// Encodes a bounded collection of fills under one synchronization decision. This is used for
+    /// transient counters, validation storage, worklists, and output buffers at transaction start.
+    public func encodeFills(
+        _ operations: [Metal4BufferFill],
+        access: Metal4CommandAccess
+    ) throws {
+        guard !operations.isEmpty else { return }
+        try ensureCanEncode(additionalCommands: operations.count)
+        for operation in operations {
+            try validate(operation)
         }
         try prepare(access)
-        lease.encoder.fill(buffer: buffer, range: range, value: value)
-        lease.retain(buffer)
-        statisticsValue.commandCount += 1
-        statisticsValue.blitCount += 1
-        telemetry.recordBlit()
+        for operation in operations {
+            lease.encoder.fill(
+                buffer: operation.buffer,
+                range: operation.range,
+                value: operation.value
+            )
+            lease.retain(operation.buffer)
+            telemetry.recordBlit()
+        }
+        statisticsValue.commandCount += operations.count
+        statisticsValue.blitCount += operations.count
     }
 
     public func encodeDispatch(
@@ -241,7 +302,6 @@ public final class Metal4EncodingSession: @unchecked Sendable {
         indirectAddress: MTLGPUAddress? = nil,
         indirectThreadsPerThreadgroup: MTLSize? = nil
     ) throws {
-        try ensureCanEncode()
         let decision = try Metal4DispatchPlanner.decide(
             kernel: kernel,
             threadCount: threadCount,
@@ -249,6 +309,7 @@ public final class Metal4EncodingSession: @unchecked Sendable {
             configuration: configuration
         )
         guard decision.threadCount > 0 else { return }
+        try ensureCanEncode(additionalCommands: 1)
         try prepare(.dispatch(kernel))
 
         lease.encoder.setArgumentTable(argumentTable.table)
@@ -315,12 +376,47 @@ public final class Metal4EncodingSession: @unchecked Sendable {
         }
     }
 
-    private func ensureCanEncode() throws {
+    private func ensureCanEncode(additionalCommands: Int) throws {
         guard !ended else { throw Metal4EncodingError.sessionAlreadyEnded }
-        guard statisticsValue.commandCount <
-                configuration.maximumDispatchesPerGroup else {
+        guard additionalCommands >= 0 else {
+            throw Metal4EncodingError.invalidCommandCount(additionalCommands)
+        }
+        let total = statisticsValue.commandCount.addingReportingOverflow(
+            additionalCommands
+        )
+        guard !total.overflow,
+              total.partialValue <= configuration.maximumDispatchesPerGroup else {
             throw Metal4EncodingError.commandGroupLimitExceeded(
                 configuration.maximumDispatchesPerGroup
+            )
+        }
+    }
+
+    private func validate(_ operation: Metal4BufferCopy) throws {
+        guard operation.size > 0,
+              operation.sourceOffset >= 0,
+              operation.destinationOffset >= 0,
+              operation.sourceOffset <= operation.source.length,
+              operation.destinationOffset <= operation.destination.length,
+              operation.size <= operation.source.length - operation.sourceOffset,
+              operation.size <= operation.destination.length - operation.destinationOffset else {
+            throw Metal4EncodingError.invalidCopyRange(
+                sourceLength: operation.source.length,
+                sourceOffset: operation.sourceOffset,
+                destinationLength: operation.destination.length,
+                destinationOffset: operation.destinationOffset,
+                size: operation.size
+            )
+        }
+    }
+
+    private func validate(_ operation: Metal4BufferFill) throws {
+        guard !operation.range.isEmpty,
+              operation.range.lowerBound >= 0,
+              operation.range.upperBound <= operation.buffer.length else {
+            throw Metal4EncodingError.invalidFillRange(
+                bufferLength: operation.buffer.length,
+                range: operation.range
             )
         }
     }
@@ -345,6 +441,7 @@ public enum Metal4EncodingError: Error, Sendable, CustomStringConvertible {
         size: Int
     )
     case invalidFillRange(bufferLength: Int, range: Range<Int>)
+    case invalidCommandCount(Int)
     case missingIndirectArguments(String)
     case commandGroupLimitExceeded(Int)
     case sessionAlreadyEnded
@@ -361,6 +458,8 @@ public enum Metal4EncodingError: Error, Sendable, CustomStringConvertible {
             return "Invalid Metal 4 copy: source \(sourceOffset)+\(size)/\(sourceLength), destination \(destinationOffset)+\(size)/\(destinationLength)"
         case .invalidFillRange(let bufferLength, let range):
             return "Invalid Metal 4 fill range \(range) for \(bufferLength)-byte buffer"
+        case .invalidCommandCount(let count):
+            return "Metal 4 logical command group contains invalid count \(count)"
         case .missingIndirectArguments(let kernel):
             return "Metal 4 indirect dispatch for \(kernel) is missing its argument address or threadgroup size"
         case .commandGroupLimitExceeded(let limit):

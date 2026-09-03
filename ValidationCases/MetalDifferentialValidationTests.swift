@@ -27,6 +27,34 @@ final class MetalDifferentialValidationTests: XCTestCase {
         )
     }
 
+    func testCompactGPUStateDigestMatchesHostSemanticDigest() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("No Metal device is available")
+        }
+        let state = ValidationFixtures.passiveState()
+        let host = RuntimeStateDigestBuilder.make(state: state)
+        let engine = try await MetalStateDigestEngine(
+            device: device,
+            options: MetalExecutionOptions(
+                privateHeapBytes: 128 * 1_024 * 1_024,
+                stagingBytes: 8 * 1_024 * 1_024,
+                requestedNumericalProfile: .scientific32
+            )
+        )
+        let gpu = try await engine.digest(state: state)
+
+        XCTAssertEqual(gpu.poolDigests, host)
+        XCTAssertEqual(gpu.poolDigests.combined, host.combined)
+        XCTAssertEqual(gpu.stateCounts, state.counts)
+        XCTAssertEqual(gpu.pendingEventCount, 0)
+        XCTAssertEqual(gpu.telemetry.deviceToHostBytes, 320)
+        XCTAssertEqual(gpu.telemetry.hostToDeviceBytes, 16)
+        XCTAssertEqual(gpu.telemetry.computeCommandBuffers, 1)
+        XCTAssertEqual(gpu.telemetry.computeEncoders, 1)
+        XCTAssertEqual(gpu.telemetry.dispatches, 1)
+        XCTAssertEqual(gpu.telemetry.completedCommandBuffers, 1)
+    }
+
     func testMetalTelemetryReportsMeasuredExecutionWithoutInventedEnergy() async throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("No Metal device is available")

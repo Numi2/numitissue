@@ -1,6 +1,7 @@
 #if canImport(Metal)
 import Foundation
 import Metal
+import NumiTissueCore
 import NumiTissueRuntime
 
 @frozen

@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 import NumiTissue
+import NumiTissueRuntime
 
 final class TransactionValidationTests: XCTestCase {
     func testStaleContextIsRejectedBeforeShadowMutation() async throws {
@@ -30,7 +31,10 @@ final class TransactionValidationTests: XCTestCase {
         }
 
         let committed = try await backend.exportCommittedState()
-        XCTAssertEqual(try TissueStateDigest.compute(committed), try TissueStateDigest.compute(state))
+        XCTAssertEqual(
+            try TissueStateDigest.compute(committed),
+            try TissueStateDigest.compute(state)
+        )
     }
 
     func testDelayedCommittedEventSurvivesShadowRollback() async throws {
@@ -118,9 +122,8 @@ final class TransactionValidationTests: XCTestCase {
             2.25,
             accuracy: 1e-7
         )
-        XCTAssertTrue(
-            try await backend.exportEventWheelSnapshot().events.isEmpty
-        )
+        let emptyWheel = try await backend.exportEventWheelSnapshot()
+        XCTAssertTrue(emptyWheel.events.isEmpty)
     }
 
     func testIncompleteEventAdvanceCannotCommit() async throws {
@@ -188,13 +191,17 @@ final class TransactionValidationTests: XCTestCase {
         XCTAssertEqual(report.status, .rejected)
         XCTAssertTrue(report.issues.contains {
             $0.severity == .reject &&
-            ($0.code == ValidationCode.voltageBounds ||
-             $0.code == ValidationCode.nonFinite)
+            ($0.code == NumiTissueRuntime.ValidationCode.voltageBounds ||
+             $0.code == NumiTissueRuntime.ValidationCode.nonFinite)
         })
         let committed = try await session.exportState()
-        XCTAssertEqual(try TissueStateDigest.compute(committed), initialDigest)
-        XCTAssertEqual(try await backend.exportEventWheelSnapshot().count, 0)
-        XCTAssertEqual(await session.time().tick, 0)
+        XCTAssertEqual(
+            try TissueStateDigest.compute(committed),
+            initialDigest
+        )
+        let wheel = try await backend.exportEventWheelSnapshot()
+        XCTAssertEqual(wheel.events.count, 0)
+        XCTAssertEqual((await session.time()).tick, 0)
         XCTAssertEqual(await session.epoch(), 0)
     }
 
@@ -268,7 +275,7 @@ final class TransactionValidationTests: XCTestCase {
             checkpoint: restoredCheckpoint,
             expectedModelDigest: ValidationFixtures.modelDigest
         )
-        XCTAssertEqual(await restoredSession.time().tick, 200)
+        XCTAssertEqual((await restoredSession.time()).tick, 200)
         XCTAssertEqual(await restoredSession.epoch(), 1)
 
         let second = await restoredSession.step(randomSeed: 12)

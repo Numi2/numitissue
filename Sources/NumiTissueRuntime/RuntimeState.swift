@@ -251,7 +251,7 @@ public struct RuntimeMicrodomainState: Sendable, Hashable, Codable {
 
 /// Mutable authority for the CPU reference runtime. The Metal runtime mirrors these pools in
 /// private GPU heaps and uses the same semantic layout, not necessarily the same byte layout.
-public struct TissueRuntimeState: Sendable {
+public struct TissueRuntimeState: Sendable, Codable {
     public var time: TissueTime
     public var epoch: UInt64
     public var tiles: [TileRuntimeState]

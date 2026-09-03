@@ -461,12 +461,16 @@ public enum NumiTissuePhase4Sidecars {
         implementation: "numitissue-jaxley",
         implementationVersion: "1",
         runtime: "python",
-        runtimeVersion: ">=3.10,<3.14",
-        packageVersions: ["jaxley": "0.13.0"],
+        runtimeVersion: ">=3.12,<3.15",
+        packageVersions: [
+            "jaxley": "0.13.0",
+            "jax": "0.11.1",
+            "jaxlib": "0.11.1"
+        ],
         metadata: [
             "entrypoint": "Tools/numitissue-jaxley/numitissue_jaxley.py",
             "default-platform": "cpu",
-            "accelerator-policy": "explicit"
+            "accelerator-policy": "cpu-reference-only"
         ]
     )
 
@@ -476,9 +480,11 @@ public enum NumiTissuePhase4Sidecars {
         implementationVersion: "1",
         runtime: "python",
         runtimeVersion: ">=3.11,<3.15",
+        packageVersions: ["h5py": "3.16.0"],
         metadata: [
             "entrypoint": "Tools/numitissue-reference/numitissue_reference.py",
-            "engine-policy": "request-pinned"
+            "engine-policy": "fixed-allowlist-and-request-pinned",
+            "h5py-source": "h5py/h5py@b2f0347c4200333acd89b43733f1caa0c115162f"
         ]
     )
 

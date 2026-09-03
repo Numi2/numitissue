@@ -1,0 +1,50 @@
+{
+  "inputs": [
+    {
+      "byteCount": 1436,
+      "id": "traces",
+      "mediaType": "application/json",
+      "metadata": {},
+      "relativePath": "traces.json",
+      "role": "voltage-traces",
+      "sha256": "fa9213d17a4830a13373e94e697f513f410f78c4345ac60d86f0e02f145be980"
+    }
+  ],
+  "metadata": {
+    "example": "phase4"
+  },
+  "operation": "featureExtract",
+  "parameters": {},
+  "requestID": "phase4-efel-features",
+  "schemaVersion": 1,
+  "selection": {
+    "electrodeIDs": [],
+    "featureNames": [
+      "Spikecount",
+      "voltage_base",
+      "AP_amplitude",
+      "AP_width"
+    ],
+    "maximumOutputBytes": 16777216,
+    "maximumRecords": 1000,
+    "maximumSamplesPerSeries": 1000000,
+    "metadata": {},
+    "objectPaths": [],
+    "subjectIDs": []
+  },
+  "sidecar": "efel",
+  "toolchain": {
+    "implementation": "numitissue-efel",
+    "implementationVersion": "1",
+    "metadata": {
+      "entrypoint": "Tools/numitissue-efel/numitissue_efel.py"
+    },
+    "packageVersions": {
+      "efel": "5.7.34"
+    },
+    "runtime": "python",
+    "runtimeVersion": ">=3.10,<3.15",
+    "sidecar": "efel",
+    "standardVersions": {}
+  }
+}

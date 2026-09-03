@@ -20,8 +20,7 @@ struct NumiTissueCLIEntryPoint {
         case "checkpoint": try checkpoint(Array(arguments.dropFirst()))
         case "nmodl": try nmodl(Array(arguments.dropFirst()))
         case "expression": try expression(Array(arguments.dropFirst()))
-        case "inspect-checkpoint", "compile-nmodl", "eval-expr",
-             "validate-experiment", "campaign", "screening", "organoid", "wetware":
+        case "validate-experiment", "campaign", "screening", "organoid", "wetware":
             try NumiTissueCommandLine.run(arguments: arguments)
         default: throw CLIError.unknownCommand(command)
         }

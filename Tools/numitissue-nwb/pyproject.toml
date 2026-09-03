@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=75,<76"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "numitissue-nwb"
+version = "1.0.0"
+description = "Version-pinned NWB validation and bounded extraction sidecar for NumiTissue"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "pynwb==4.1.0",
+]
+
+[project.scripts]
+numitissue-nwb = "numitissue_nwb:main"
+
+[tool.setuptools]
+py-modules = ["numitissue_nwb"]

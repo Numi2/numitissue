@@ -1,0 +1,8 @@
+To the extent possible under law, the authors and contributors dedicate the
+NumiTissue Phase 4 conformance fixtures in this directory to the public domain
+under CC0 1.0 Universal.
+
+The fixtures are synthetic interoperability examples. They are not biological
+measurements and they do not carry a claim of scientific validity.
+
+License text and terms: https://creativecommons.org/publicdomain/zero/1.0/

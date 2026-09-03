@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "createdOn": "2026-09-02",
+  "python": {
+    "minimum": "3.11",
+    "maximumExclusive": "3.15"
+  },
+  "packages": [
+    {
+      "distribution": "neuron",
+      "importName": "neuron",
+      "version": "9.0.2",
+      "role": "detailed-electrophysiology-reference"
+    },
+    {
+      "distribution": "arbor",
+      "importName": "arbor",
+      "version": "0.12.2",
+      "role": "multicompartment-network-reference"
+    },
+    {
+      "distribution": "STEPS",
+      "importName": "steps",
+      "version": "5.1.0",
+      "role": "spatial-stochastic-reaction-diffusion-reference"
+    },
+    {
+      "distribution": "efel",
+      "importName": "efel",
+      "version": "5.7.34",
+      "role": "electrophysiology-feature-authority"
+    }
+  ],
+  "repositories": [
+    {
+      "id": "arbor-nsuite",
+      "url": "https://github.com/arbor-sim/nsuite.git",
+      "revision": "5af75d193bae5d43fad3fc87912ab22b53bf41d6",
+      "role": "cross-simulator-cable-and-synapse-validation"
+    },
+    {
+      "id": "steps-validation",
+      "url": "https://github.com/CNS-OIST/STEPS_Validation.git",
+      "revision": "6c8aa8544d77be5e2396d554cb945662748f2c25",
+      "role": "reaction-diffusion-validation-corpus"
+    }
+  ]
+}

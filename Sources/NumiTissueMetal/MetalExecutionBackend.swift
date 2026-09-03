@@ -32,10 +32,16 @@ private final class MetalPhaseHeaderRing: @unchecked Sendable {
     }
 }
 
+private struct StagedMetalOverlay: Sendable {
+    var transaction: TransactionID
+    var overlay: CompiledTransactionOverlay
+    var stateTemplate: TissueRuntimeState
+}
+
 /// Production Apple-Silicon backend. It records the complete 5 ms transaction into one Metal
 /// command buffer. Per-phase headers are copied from a ring into the bound header resource,
 /// preserving exact tick semantics without CPU/GPU synchronization between fast substeps.
-public actor MetalTissueBackend: NumiTissueExecutionBackend {
+public actor MetalTissueBackend: InterventionAwareTissueBackend {
     nonisolated public let name = "NumiTissue Metal"
     nonisolated public let capabilities: TissueRuntimeCapabilities
 
@@ -43,6 +49,7 @@ public actor MetalTissueBackend: NumiTissueExecutionBackend {
     public let options: MetalExecutionOptions
 
     private let molecularProgram: MetalMolecularProgram
+    private let overlayCompiler = RuntimeOverlayCompiler()
     private var shaderLibrary: MetalShaderLibrary?
     private var modelBuffers: MetalModelBuffers?
     private var arena: MetalStateArena?
@@ -54,6 +61,8 @@ public actor MetalTissueBackend: NumiTissueExecutionBackend {
     private var commandBuffer: MTLCommandBuffer?
     private var maxCableDepth: UInt32 = 0
     private var commandSubmitted = false
+    private var stagedOverlay: StagedMetalOverlay?
+    private var activeOverlayBuffers: MetalTransactionOverlayBuffers?
 
     public init(
         capabilities: TissueRuntimeCapabilities,
@@ -77,7 +86,7 @@ public actor MetalTissueBackend: NumiTissueExecutionBackend {
         try shaders.prewarm()
         let arena = try MetalStateArena(context: context, initialState: normalized)
         try await arena.uploadInitialState(normalized)
-        let modelBuffers = try await MetalModelBuffers(context: context, program: molecularProgram)
+        let modelBuffers = try await MetalModelBuffers(context: context, model: model, program: molecularProgram)
         let ring = try MetalPhaseHeaderRing(context: context)
         let committedTable = try MetalArgumentTable(
             context: context,
@@ -105,25 +114,85 @@ public actor MetalTissueBackend: NumiTissueExecutionBackend {
         try await clearPersistentTransientState(arena: arena, shaders: shaders, table: shadowTable)
     }
 
+    public func stageInterventions(
+        _ frame: TissueInterventionFrame,
+        context executionContext: ExecutionContext
+    ) async throws {
+        guard let arena, let model else { throw MetalRuntimeError.stateNotLoaded }
+        guard currentContext == nil else { throw RuntimeExecutionError.transactionInProgress }
+        guard frame.tick == executionContext.startTime.tick else {
+            throw RuntimeOverlayError.staleFrame(expected: executionContext.startTime.tick, received: frame.tick)
+        }
+        let currentState = try await arena.downloadCommittedState()
+        let compiled = try overlayCompiler.compile(frame: frame, state: currentState, model: model)
+        stagedOverlay = StagedMetalOverlay(
+            transaction: executionContext.transaction,
+            overlay: compiled,
+            stateTemplate: currentState
+        )
+    }
+
     public func beginShadowStep(context executionContext: ExecutionContext, input: RuntimeInputFrame) async throws {
-        guard let arena, shaderLibrary != nil, modelBuffers != nil, let ring = phaseHeaderRing else { throw MetalRuntimeError.stateNotLoaded }
+        guard let arena, let shaders = shaderLibrary, let modelBuffers, let ring = phaseHeaderRing else {
+            throw MetalRuntimeError.stateNotLoaded
+        }
         guard currentContext == nil else { throw MetalRuntimeError.transactionAlreadyOpen }
+        if let stagedOverlay, stagedOverlay.transaction != executionContext.transaction {
+            throw RuntimeExecutionError.staleTransaction
+        }
+
         try await arena.copyCommittedToShadow()
         arena.transient.resetCPUVisible()
-        try arena.uploadInput(events: input.afferentEvents, stimuli: input.stimuli)
-        writeControlInput(input, to: arena.transient.outputScalars)
+        var effectiveInput = input
+        if let stagedOverlay {
+            effectiveInput.stimuli.append(contentsOf: stagedOverlay.overlay.stimuli)
+            effectiveInput.stimuli.sort {
+                if $0.startTick != $1.startTick { return $0.startTick < $1.startTick }
+                if $0.destination != $1.destination { return $0.destination < $1.destination }
+                return $0.kind < $1.kind
+            }
+        }
+        try arena.uploadInput(events: effectiveInput.afferentEvents, stimuli: effectiveInput.stimuli)
+        writeControlInput(effectiveInput, to: arena.transient.outputScalars)
 
         ring.reset()
         currentContext = executionContext
-        currentInput = input
+        currentInput = effectiveInput
         commandSubmitted = false
-        guard let command = context.commandQueue.makeCommandBuffer() else { throw MetalRuntimeError.commandBufferCreationFailed }
+        guard let command = context.commandQueue.makeCommandBuffer() else {
+            clearOpenTransaction()
+            throw MetalRuntimeError.commandBufferCreationFailed
+        }
         command.label = "NumiTissue.transaction.\(executionContext.transaction.rawValue)"
         commandBuffer = command
+
+        try modelBuffers.encodeResetEffective(on: command)
+        if let stagedOverlay, !stagedOverlay.overlay.isEmpty {
+            guard let table = argumentTables[ObjectIdentifier(arena.shadow)] else {
+                clearOpenTransaction()
+                throw MetalRuntimeError.stateNotLoaded
+            }
+            let buffers = try MetalTransactionOverlayBuffers(
+                context: context,
+                overlay: stagedOverlay.overlay,
+                model: modelBuffers,
+                state: stagedOverlay.stateTemplate,
+                transactionID: executionContext.transaction.rawValue
+            )
+            try buffers.encodeMaterialization(
+                command: command,
+                library: shaders,
+                argumentTable: table,
+                state: arena.shadow,
+                transient: arena.transient,
+                model: modelBuffers
+            )
+            activeOverlayBuffers = buffers
+        }
     }
 
     public func execute(phase: RuntimePhase, tickRange: Range<UInt64>, context executionContext: ExecutionContext) async throws {
-        guard let arena, let shaders = shaderLibrary, let modelBuffers, let ring = phaseHeaderRing, let command = commandBuffer else {
+        guard let arena, let modelBuffers, let ring = phaseHeaderRing, let command = commandBuffer else {
             throw MetalRuntimeError.noOpenTransaction
         }
         guard currentContext?.transaction == executionContext.transaction else { throw RuntimeExecutionError.staleTransaction }
@@ -135,6 +204,8 @@ public actor MetalTissueBackend: NumiTissueExecutionBackend {
         header.reserved1.y = UInt32(clamping: arena.transient.validationCapacity)
         header.reserved3.x = UInt32(clamping: modelBuffers.networkCount)
         header.reserved3.y = UInt32(clamping: modelBuffers.reactionCount)
+        header.reserved3.z = UInt32(clamping: modelBuffers.channelCount)
+        header.reserved3.w = UInt32(clamping: modelBuffers.mechanismSetCount)
 
         switch phase {
         case .ingestInputs:
@@ -146,9 +217,28 @@ public actor MetalTissueBackend: NumiTissueExecutionBackend {
             let bucketCapacity = max(Int(header.eventCapacity) / 4_096, 1)
             try encode(kernel: .deliverEvents, count: bucketCapacity, header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
         case .decaySynapses:
-            try encode(kernel: .decaySynapses, count: Int(header.synapseCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
+            try encode(
+                kernel: .decaySynapses,
+                count: Int(header.synapseCount),
+                header: header,
+                command: command,
+                ring: ring,
+                table: table,
+                state: arena.shadow,
+                transient: arena.transient,
+                additionalBuffers: parameterBuffers([.synapseParameter], model: modelBuffers, startingAt: 1)
+            )
         case .updateChannels:
-            try encode(kernel: .updateChannels, count: Int(header.compartmentCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
+            var buffers: [(MTLBuffer, Int)] = [
+                (modelBuffers.channelMetadata, 1),
+                (modelBuffers.mechanismSetMetadata, 2)
+            ]
+            buffers += parameterBuffers(
+                [.channelParameter, .mechanismSetParameter, .cellProgramParameter],
+                model: modelBuffers,
+                startingAt: 3
+            )
+            try encode(kernel: .updateChannels, count: Int(header.compartmentCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient, additionalBuffers: buffers)
         case .solveCableTrees:
             try encodeCableSolve(header: header, command: command, ring: ring, table: table, arena: arena)
         case .detectSpikes:
@@ -156,34 +246,27 @@ public actor MetalTissueBackend: NumiTissueExecutionBackend {
         case .routeSpikes:
             try encode(kernel: .routeSpikes, count: Int(header.synapseCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
         case .updateFastFields:
+            let buffers = parameterBuffers([.fieldParameter], model: modelBuffers, startingAt: 1)
             var parity0 = header
             parity0.reserved2.x = 0
-            try encode(kernel: .updateFastFields, count: Int(header.fieldValueCount), header: parity0, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
+            try encode(kernel: .updateFastFields, count: Int(header.fieldValueCount), header: parity0, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient, additionalBuffers: buffers)
             var parity1 = header
             parity1.reserved2.x = 1
-            try encode(kernel: .updateFastFields, count: Int(header.fieldValueCount), header: parity1, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
+            try encode(kernel: .updateFastFields, count: Int(header.fieldValueCount), header: parity1, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient, additionalBuffers: buffers)
         case .updateMolecularDomains:
-            try encode(
-                kernel: .updateMolecularDomains,
-                count: Int(header.microdomainCount),
-                header: header,
-                command: command,
-                ring: ring,
-                table: table,
-                state: arena.shadow,
-                transient: arena.transient,
-                additionalBuffers: [(modelBuffers.molecularNetworks, 1), (modelBuffers.molecularReactions, 2)]
-            )
+            var buffers: [(MTLBuffer, Int)] = [(modelBuffers.molecularNetworks, 1), (modelBuffers.molecularReactions, 2)]
+            buffers += parameterBuffers([.molecularReactionParameter], model: modelBuffers, startingAt: 3)
+            try encode(kernel: .updateMolecularDomains, count: Int(header.microdomainCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient, additionalBuffers: buffers)
         case .updateGliaAndMetabolism:
-            try encode(kernel: .updateGliaAndMetabolism, count: Int(header.cellCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
+            try encode(kernel: .updateGliaAndMetabolism, count: Int(header.cellCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient, additionalBuffers: parameterBuffers([.glialProgramParameter, .cellProgramParameter, .fieldParameter], model: modelBuffers, startingAt: 1))
         case .applyPlasticity:
-            try encode(kernel: .applyPlasticity, count: Int(header.synapseCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
+            try encode(kernel: .applyPlasticity, count: Int(header.synapseCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient, additionalBuffers: parameterBuffers([.synapseParameter], model: modelBuffers, startingAt: 1))
         case .updateCellMechanics:
-            try encode(kernel: .updateCellMechanics, count: Int(header.cellCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
+            try encode(kernel: .updateCellMechanics, count: Int(header.cellCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient, additionalBuffers: parameterBuffers([.cellProgramParameter], model: modelBuffers, startingAt: 1))
         case .updateDevelopment:
-            try encode(kernel: .updateDevelopment, count: max(Int(header.cellCount), Int(header.segmentCount)), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
+            try encode(kernel: .updateDevelopment, count: max(Int(header.cellCount), Int(header.segmentCount)), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient, additionalBuffers: parameterBuffers([.regulatoryProgramParameter, .fateTransitionParameter, .growthProgramParameter, .cellProgramParameter, .glialProgramParameter], model: modelBuffers, startingAt: 1))
         case .updateStructuralPlasticity:
-            try encode(kernel: .updateStructuralPlasticity, count: Int(header.synapseCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
+            try encode(kernel: .updateStructuralPlasticity, count: Int(header.synapseCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient, additionalBuffers: parameterBuffers([.synapseParameter], model: modelBuffers, startingAt: 1))
         case .updateAdaptiveFidelity:
             try encode(kernel: .updateAdaptiveFidelity, count: Int(header.cellCount), header: header, command: command, ring: ring, table: table, state: arena.shadow, transient: arena.transient)
         case .collectOutputs:
@@ -296,6 +379,16 @@ public actor MetalTissueBackend: NumiTissueExecutionBackend {
         }
     }
 
+    private func parameterBuffers(
+        _ domains: [RuntimeOverlayDomain],
+        model: MetalModelBuffers,
+        startingAt firstIndex: Int
+    ) -> [(MTLBuffer, Int)] {
+        domains.enumerated().compactMap { offset, domain in
+            model.table(for: domain).map { ($0.effective, firstIndex + offset) }
+        }
+    }
+
     private func encode(
         kernel: MetalKernel,
         count: Int,
@@ -317,7 +410,10 @@ public actor MetalTissueBackend: NumiTissueExecutionBackend {
         guard let compute = command.makeComputeCommandEncoder() else { throw MetalRuntimeError.encoderCreationFailed(kernel.rawValue) }
         compute.label = "NumiTissue.\(kernel.rawValue)"
         compute.setBuffer(table.buffer, offset: 0, index: 0)
-        for (buffer, index) in additionalBuffers { compute.setBuffer(buffer, offset: 0, index: index) }
+        for (buffer, index) in additionalBuffers {
+            compute.setBuffer(buffer, offset: 0, index: index)
+            compute.useResource(buffer, usage: .read)
+        }
         table.useResources(on: compute, state: state, transient: transient)
         let pipeline = try shaderLibrary?.pipeline(kernel) ?? { throw MetalRuntimeError.stateNotLoaded }()
         compute.ntDispatch1D(count: count, pipeline: pipeline)
@@ -341,6 +437,8 @@ public actor MetalTissueBackend: NumiTissueExecutionBackend {
         currentInput = nil
         commandBuffer = nil
         commandSubmitted = false
+        stagedOverlay = nil
+        activeOverlayBuffers = nil
     }
 
     private func clearPersistentTransientState(arena: MetalStateArena, shaders: MetalShaderLibrary, table: MetalArgumentTable) async throws {

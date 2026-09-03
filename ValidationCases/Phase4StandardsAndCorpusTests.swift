@@ -134,7 +134,8 @@ final class Phase4StandardsAndCorpusTests: XCTestCase {
         let program = try SBMLToMolecularIRCompiler.compile(document)
         XCTAssertEqual(program.species.map(\.id), ["S"])
         XCTAssertEqual(program.reactions.map(\.id), ["decay"])
-        XCTAssertEqual(program.reactions.first?.rateConstant, 0.1, accuracy: 1e-12)
+        let reaction = try XCTUnwrap(program.reactions.first)
+        XCTAssertEqual(reaction.rateConstant, 0.1, accuracy: 1e-12)
         XCTAssertEqual(program.sourceMetadata["format"], "SBML")
     }
 
@@ -155,7 +156,7 @@ final class Phase4StandardsAndCorpusTests: XCTestCase {
 
     func testSONATAConfigurationAndTypeTablesAreDeterministic() throws {
         let configurationURL = try fixtureURL("sonata-config.json")
-        let configuration = try SONATAConfigurationLoader.load(
+        let configuration = try SONATAConfigurationLoader.loadCanonical(
             url: configurationURL
         )
         XCTAssertEqual(configuration.networks.count, 2)

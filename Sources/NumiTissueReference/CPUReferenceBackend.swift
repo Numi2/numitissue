@@ -371,6 +371,64 @@ extension CPUReferenceTissueBackend: InterventionAwareTissueBackend {
     }
 }
 
+extension CPUReferenceTissueBackend: RuntimePhaseInspectableBackend {
+    nonisolated public var numericalProfile: RuntimeNumericalProfile { .reference64 }
+
+    public func captureShadowDigest(
+        phase: RuntimePhase,
+        tickRange: Range<UInt64>,
+        context: ExecutionContext
+    ) async throws -> RuntimePhaseDigestSnapshot {
+        try differentialInspection(
+            phase: phase,
+            tickRange: tickRange,
+            context: context
+        ).digestSnapshot
+    }
+
+    public func exportShadowInspection(
+        phase: RuntimePhase,
+        tickRange: Range<UInt64>,
+        context: ExecutionContext
+    ) async throws -> RuntimeShadowInspection {
+        try differentialInspection(
+            phase: phase,
+            tickRange: tickRange,
+            context: context
+        )
+    }
+
+    private func differentialInspection(
+        phase: RuntimePhase,
+        tickRange: Range<UInt64>,
+        context: ExecutionContext
+    ) throws -> RuntimeShadowInspection {
+        guard currentContext?.transaction == context.transaction,
+              let state = shadow,
+              let wheel = shadowEventWheel else {
+            throw RuntimeExecutionError.staleTransaction
+        }
+        let pending = wheel.pendingEvents
+            .map { RuntimePendingEvent($0, state: state) }
+            .sorted()
+        return RuntimeShadowInspection(
+            backendName: name,
+            numericalProfile: numericalProfile,
+            transaction: context.transaction,
+            phase: phase,
+            tickRange: tickRange,
+            state: state,
+            pendingEvents: pending,
+            counters: runtimeCounters,
+            metadata: [
+                "eventWheel.currentTick": String(wheel.currentTick),
+                "eventWheel.horizonEndTick": String(wheel.horizonEndTick),
+                "inspection.readback": "none"
+            ]
+        )
+    }
+}
+
 public enum CPUReferenceBackendError: Error, Sendable, CustomStringConvertible {
     case eventWheelAheadOfCommittedTime(wheel: UInt64, committed: UInt64)
     case overdueCommittedEvents(count: Int)

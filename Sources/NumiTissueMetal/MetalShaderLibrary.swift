@@ -1,6 +1,7 @@
 #if canImport(Metal)
 import Foundation
 import Metal
+import NumiTissueRuntime
 
 public enum MetalKernel: String, Sendable, CaseIterable {
     case resetTransientState = "nt_reset_transient_state"
@@ -45,20 +46,22 @@ public struct MetalPipelineKey: Hashable, Sendable {
 public final class MetalShaderLibrary: @unchecked Sendable {
     public let context: MetalDeviceContext
     public let library: MTLLibrary
+    public let numericalProfile: RuntimeNumericalProfile
 
     private let lock = NSLock()
     private var pipelines: [MetalPipelineKey: MTLComputePipelineState] = [:]
 
     public init(context: MetalDeviceContext, additionalSource: String? = nil) async throws {
         self.context = context
+        numericalProfile = context.options.effectiveNumericalProfile
         let source = try Self.loadBundledShaderSource(additionalSource: additionalSource)
         let options = MTLCompileOptions()
-        options.mathMode = .fast
+        options.mathMode = numericalProfile == .performance32 ? .fast : .safe
         options.languageVersion = .version3_2
         options.preserveInvariance = true
         do {
             self.library = try await context.device.makeLibrary(source: source, options: options)
-            self.library.label = "NumiTissue.RuntimeKernels"
+            self.library.label = "NumiTissue.RuntimeKernels.\(numericalProfile.rawValue)"
         } catch {
             throw MetalRuntimeError.libraryCompilationFailed(String(describing: error))
         }
@@ -92,7 +95,7 @@ public final class MetalShaderLibrary: @unchecked Sendable {
         }
 
         let descriptor = MTLComputePipelineDescriptor()
-        descriptor.label = "NumiTissue.\(kernel.rawValue)"
+        descriptor.label = "NumiTissue.\(kernel.rawValue).\(numericalProfile.rawValue)"
         descriptor.computeFunction = function
         descriptor.threadGroupSizeIsMultipleOfThreadExecutionWidth = true
         descriptor.maxCallStackDepth = 1

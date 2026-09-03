@@ -6,6 +6,7 @@ using namespace metal;
 
 constant uint NT_MAX_DOMAIN_SPECIES = 64u;
 constant uint NT_MAX_REACTION_FIRINGS_PER_QUANTUM = 32u;
+constant uint NT_MOLECULAR_REACTION_PARAMETER_STRIDE = 2u;
 
 struct NTMolecularNetwork {
     uint reactionOffset;
@@ -15,7 +16,7 @@ struct NTMolecularNetwork {
 };
 
 struct NTMolecularReaction {
-    uint4 reactants;      // local indices, NT_INVALID_INDEX for unused
+    uint4 reactants;
     uint4 products;
     char4 reactantStoichiometry;
     char4 productStoichiometry;
@@ -34,53 +35,75 @@ inline float nt_falling_factorial(float amount, uint order) {
     return result;
 }
 
-inline float nt_reaction_propensity(
-    device const float* species,
-    uint speciesCount,
-    NTMolecularReaction reaction
+inline float nt_effective_reaction_rate(
+    device const float* parameters,
+    uint reactionIndex,
+    uint component,
+    float fallback
 ) {
-    float propensity = max(reaction.rateConstant, 0.0f);
-    for (uint slot = 0u; slot < 4u; ++slot) {
-        const uint index = reaction.reactants[slot];
-        if (index == NT_INVALID_INDEX) { continue; }
-        if (index >= speciesCount) { return 0.0f; }
-        const uint stoichiometry = uint(max(int(reaction.reactantStoichiometry[slot]), 0));
-        propensity *= nt_falling_factorial(species[index], stoichiometry);
-    }
-    return max(propensity, 0.0f);
+    const float value = parameters[reactionIndex * NT_MOLECULAR_REACTION_PARAMETER_STRIDE + component];
+    return isfinite(value) ? max(value, 0.0f) : max(fallback, 0.0f);
 }
 
-inline bool nt_can_fire(
+inline float nt_direction_propensity(
     device const float* species,
     uint speciesCount,
     NTMolecularReaction reaction,
-    uint firings
+    float rate,
+    bool reverse
 ) {
+    float propensity = max(rate, 0.0f);
+    const uint4 participants = reverse ? reaction.products : reaction.reactants;
+    const char4 stoichiometry = reverse ? reaction.productStoichiometry : reaction.reactantStoichiometry;
     for (uint slot = 0u; slot < 4u; ++slot) {
-        const uint index = reaction.reactants[slot];
+        const uint index = participants[slot];
+        if (index == NT_INVALID_INDEX) { continue; }
+        if (index >= speciesCount) { return 0.0f; }
+        const uint order = uint(max(int(stoichiometry[slot]), 0));
+        propensity *= nt_falling_factorial(species[index], order);
+    }
+    return isfinite(propensity) ? max(propensity, 0.0f) : 0.0f;
+}
+
+inline bool nt_can_fire_direction(
+    device const float* species,
+    uint speciesCount,
+    NTMolecularReaction reaction,
+    uint firings,
+    bool reverse
+) {
+    const uint4 participants = reverse ? reaction.products : reaction.reactants;
+    const char4 stoichiometry = reverse ? reaction.productStoichiometry : reaction.reactantStoichiometry;
+    for (uint slot = 0u; slot < 4u; ++slot) {
+        const uint index = participants[slot];
         if (index == NT_INVALID_INDEX) { continue; }
         if (index >= speciesCount) { return false; }
-        const float required = float(max(int(reaction.reactantStoichiometry[slot]), 0)) * float(firings);
+        const float required = float(max(int(stoichiometry[slot]), 0)) * float(firings);
         if (species[index] + 1.0e-6f < required) { return false; }
     }
     return true;
 }
 
-inline void nt_apply_reaction(
+inline void nt_apply_reaction_direction(
     device float* species,
     uint speciesCount,
     NTMolecularReaction reaction,
-    uint firings
+    uint firings,
+    bool reverse
 ) {
     const float scale = float(firings);
+    const uint4 inputs = reverse ? reaction.products : reaction.reactants;
+    const uint4 outputs = reverse ? reaction.reactants : reaction.products;
+    const char4 inputStoichiometry = reverse ? reaction.productStoichiometry : reaction.reactantStoichiometry;
+    const char4 outputStoichiometry = reverse ? reaction.reactantStoichiometry : reaction.productStoichiometry;
     for (uint slot = 0u; slot < 4u; ++slot) {
-        const uint reactant = reaction.reactants[slot];
-        if (reactant != NT_INVALID_INDEX && reactant < speciesCount) {
-            species[reactant] = max(0.0f, species[reactant] - scale * float(max(int(reaction.reactantStoichiometry[slot]), 0)));
+        const uint input = inputs[slot];
+        if (input != NT_INVALID_INDEX && input < speciesCount) {
+            species[input] = max(0.0f, species[input] - scale * float(max(int(inputStoichiometry[slot]), 0)));
         }
-        const uint product = reaction.products[slot];
-        if (product != NT_INVALID_INDEX && product < speciesCount) {
-            species[product] += scale * float(max(int(reaction.productStoichiometry[slot]), 0));
+        const uint output = outputs[slot];
+        if (output != NT_INVALID_INDEX && output < speciesCount) {
+            species[output] += scale * float(max(int(outputStoichiometry[slot]), 0));
         }
     }
 }
@@ -109,6 +132,7 @@ kernel void nt_update_molecular_domains(
     constant NTResources& r [[buffer(0)]],
     device const NTMolecularNetwork* networks [[buffer(1)]],
     device const NTMolecularReaction* reactions [[buffer(2)]],
+    device const float* reactionParameters [[buffer(3)]],
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= r.header->microdomainCount) { return; }
@@ -136,7 +160,12 @@ kernel void nt_update_molecular_domains(
         for (uint event = 0u; event < NT_MAX_REACTION_FIRINGS_PER_QUANTUM && remaining > 0.0f; ++event) {
             float propensitySum = 0.0f;
             for (uint ri = 0u; ri < network.reactionCount; ++ri) {
-                propensitySum += nt_reaction_propensity(species, speciesCount, reactions[network.reactionOffset + ri]);
+                const uint globalIndex = network.reactionOffset + ri;
+                const NTMolecularReaction reaction = reactions[globalIndex];
+                const float forwardRate = nt_effective_reaction_rate(reactionParameters, globalIndex, 0u, reaction.rateConstant);
+                const float reverseRate = nt_effective_reaction_rate(reactionParameters, globalIndex, 1u, reaction.reverseRateConstant);
+                propensitySum += nt_direction_propensity(species, speciesCount, reaction, forwardRate, false);
+                propensitySum += nt_direction_propensity(species, speciesCount, reaction, reverseRate, true);
             }
             if (!(propensitySum > 0.0f) || !isfinite(propensitySum)) { break; }
             randomState = nt_philox(randomState, key);
@@ -145,43 +174,70 @@ kernel void nt_update_molecular_domains(
             remaining -= waiting;
             const float target = nt_uniform01(randomState.y) * propensitySum;
             float cumulative = 0.0f;
-            for (uint ri = 0u; ri < network.reactionCount; ++ri) {
-                const NTMolecularReaction reaction = reactions[network.reactionOffset + ri];
-                cumulative += nt_reaction_propensity(species, speciesCount, reaction);
+            bool selected = false;
+            for (uint ri = 0u; ri < network.reactionCount && !selected; ++ri) {
+                const uint globalIndex = network.reactionOffset + ri;
+                const NTMolecularReaction reaction = reactions[globalIndex];
+                const float forwardRate = nt_effective_reaction_rate(reactionParameters, globalIndex, 0u, reaction.rateConstant);
+                const float reverseRate = nt_effective_reaction_rate(reactionParameters, globalIndex, 1u, reaction.reverseRateConstant);
+                const float forward = nt_direction_propensity(species, speciesCount, reaction, forwardRate, false);
+                cumulative += forward;
                 if (cumulative >= target) {
-                    if (nt_can_fire(species, speciesCount, reaction, 1u)) {
-                        nt_apply_reaction(species, speciesCount, reaction, 1u);
+                    if (nt_can_fire_direction(species, speciesCount, reaction, 1u, false)) {
+                        nt_apply_reaction_direction(species, speciesCount, reaction, 1u, false);
                         firingsTotal++;
                     }
+                    selected = true;
                     break;
+                }
+                const float reverse = nt_direction_propensity(species, speciesCount, reaction, reverseRate, true);
+                cumulative += reverse;
+                if (cumulative >= target) {
+                    if (nt_can_fire_direction(species, speciesCount, reaction, 1u, true)) {
+                        nt_apply_reaction_direction(species, speciesCount, reaction, 1u, true);
+                        firingsTotal++;
+                    }
+                    selected = true;
                 }
             }
         }
     } else if (solverKind == 1u) {
         for (uint ri = 0u; ri < network.reactionCount; ++ri) {
-            const NTMolecularReaction reaction = reactions[network.reactionOffset + ri];
-            const float lambda = nt_reaction_propensity(species, speciesCount, reaction) * dtSeconds;
-            uint firings = min(nt_poisson(lambda, randomState, key), NT_MAX_REACTION_FIRINGS_PER_QUANTUM);
-            while (firings > 0u && !nt_can_fire(species, speciesCount, reaction, firings)) { firings >>= 1u; }
-            if (firings > 0u) {
-                nt_apply_reaction(species, speciesCount, reaction, firings);
-                firingsTotal += firings;
+            const uint globalIndex = network.reactionOffset + ri;
+            const NTMolecularReaction reaction = reactions[globalIndex];
+            const float forwardRate = nt_effective_reaction_rate(reactionParameters, globalIndex, 0u, reaction.rateConstant);
+            const float reverseRate = nt_effective_reaction_rate(reactionParameters, globalIndex, 1u, reaction.reverseRateConstant);
+            for (uint direction = 0u; direction < 2u; ++direction) {
+                const bool reverse = direction == 1u;
+                const float rate = reverse ? reverseRate : forwardRate;
+                const float lambda = nt_direction_propensity(species, speciesCount, reaction, rate, reverse) * dtSeconds;
+                uint firings = min(nt_poisson(lambda, randomState, key), NT_MAX_REACTION_FIRINGS_PER_QUANTUM);
+                while (firings > 0u && !nt_can_fire_direction(species, speciesCount, reaction, firings, reverse)) { firings >>= 1u; }
+                if (firings > 0u) {
+                    nt_apply_reaction_direction(species, speciesCount, reaction, firings, reverse);
+                    firingsTotal += firings;
+                }
             }
         }
     } else {
         float derivatives[NT_MAX_DOMAIN_SPECIES];
         for (uint i = 0u; i < speciesCount; ++i) { derivatives[i] = 0.0f; }
         for (uint ri = 0u; ri < network.reactionCount; ++ri) {
-            const NTMolecularReaction reaction = reactions[network.reactionOffset + ri];
-            const float rate = nt_reaction_propensity(species, speciesCount, reaction);
+            const uint globalIndex = network.reactionOffset + ri;
+            const NTMolecularReaction reaction = reactions[globalIndex];
+            const float forwardRate = nt_effective_reaction_rate(reactionParameters, globalIndex, 0u, reaction.rateConstant);
+            const float reverseRate = nt_effective_reaction_rate(reactionParameters, globalIndex, 1u, reaction.reverseRateConstant);
+            const float forward = nt_direction_propensity(species, speciesCount, reaction, forwardRate, false);
+            const float reverse = nt_direction_propensity(species, speciesCount, reaction, reverseRate, true);
+            const float netRate = forward - reverse;
             for (uint slot = 0u; slot < 4u; ++slot) {
                 const uint reactant = reaction.reactants[slot];
                 if (reactant != NT_INVALID_INDEX && reactant < speciesCount) {
-                    derivatives[reactant] -= rate * float(max(int(reaction.reactantStoichiometry[slot]), 0));
+                    derivatives[reactant] -= netRate * float(max(int(reaction.reactantStoichiometry[slot]), 0));
                 }
                 const uint product = reaction.products[slot];
                 if (product != NT_INVALID_INDEX && product < speciesCount) {
-                    derivatives[product] += rate * float(max(int(reaction.productStoichiometry[slot]), 0));
+                    derivatives[product] += netRate * float(max(int(reaction.productStoichiometry[slot]), 0));
                 }
             }
         }

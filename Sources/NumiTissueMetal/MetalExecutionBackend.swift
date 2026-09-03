@@ -1140,6 +1140,109 @@ public actor MetalTissueBackend: InterventionAwareTissueBackend, AdaptiveFidelit
     }
 }
 
+extension MetalTissueBackend: RuntimePhaseInspectableBackend {
+    nonisolated public var numericalProfile: RuntimeNumericalProfile {
+        options.effectiveNumericalProfile
+    }
+
+    public func captureShadowDigest(
+        phase: RuntimePhase,
+        tickRange: Range<UInt64>,
+        context executionContext: ExecutionContext
+    ) async throws -> RuntimePhaseDigestSnapshot {
+        try await differentialInspection(
+            phase: phase,
+            tickRange: tickRange,
+            context: executionContext
+        ).digestSnapshot
+    }
+
+    public func exportShadowInspection(
+        phase: RuntimePhase,
+        tickRange: Range<UInt64>,
+        context executionContext: ExecutionContext
+    ) async throws -> RuntimeShadowInspection {
+        try await differentialInspection(
+            phase: phase,
+            tickRange: tickRange,
+            context: executionContext
+        )
+    }
+
+    private func differentialInspection(
+        phase: RuntimePhase,
+        tickRange: Range<UInt64>,
+        context executionContext: ExecutionContext
+    ) async throws -> RuntimeShadowInspection {
+        guard currentContext?.transaction == executionContext.transaction,
+              let arena else {
+            throw RuntimeExecutionError.staleTransaction
+        }
+        try await ensureSubmitted()
+        let state = try await arena.downloadShadowState()
+        let wheel = try await arena.exportPersistentEventWheel(
+            state: state,
+            routingBlockTicks: executionContext.cadence.routingBlockTicks,
+            minimumArrivalTick: executionContext.startTime.tick
+        )
+        let pending = wheel.events.map { event -> RuntimePendingEvent in
+            let target: RuntimePendingEventTarget
+            switch event.target {
+            case .synapse(let id): target = .synapse(id)
+            case .raw(let value): target = .raw(value)
+            }
+            return RuntimePendingEvent(
+                arrivalTick: event.arrivalTick,
+                source: event.source,
+                target: target,
+                amplitude: event.amplitude,
+                kind: RoutedEventKind(
+                    rawValue: UInt16(truncatingIfNeeded: event.kindAndFlags)
+                ) ?? .userDefined,
+                flags: UInt16(truncatingIfNeeded: event.kindAndFlags >> 16),
+                sequence: event.sequence
+            )
+        }.sorted()
+        let counters = arena.transient.counters.contents()
+            .load(as: MetalRuntimeCounters.self)
+            .runtimeCounters()
+        let inspection = RuntimeShadowInspection(
+            backendName: name,
+            numericalProfile: numericalProfile,
+            transaction: executionContext.transaction,
+            phase: phase,
+            tickRange: tickRange,
+            state: state,
+            pendingEvents: pending,
+            counters: counters,
+            metadata: [
+                "device.name": context.capabilities.name,
+                "device.registryID": String(context.capabilities.registryID),
+                "metal.mathProfile": numericalProfile.rawValue,
+                "inspection.readback": "full-shadow",
+                "inspection.commandBufferSplit": "true"
+            ]
+        )
+        try resumeAfterDifferentialInspection(context: executionContext)
+        return inspection
+    }
+
+    private func resumeAfterDifferentialInspection(
+        context executionContext: ExecutionContext
+    ) throws {
+        guard currentContext?.transaction == executionContext.transaction else {
+            throw RuntimeExecutionError.staleTransaction
+        }
+        guard commandBuffer == nil else { return }
+        guard let continuation = context.commandQueue.makeCommandBuffer() else {
+            throw MetalRuntimeError.commandBufferCreationFailed
+        }
+        continuation.label = "NumiTissue.transaction.\(executionContext.transaction.rawValue).inspection-continuation"
+        commandBuffer = continuation
+        commandSubmitted = false
+    }
+}
+
 private extension MetalEvent {
     var routedEvent: RoutedEvent {
         RoutedEvent(

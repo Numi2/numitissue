@@ -1,0 +1,21 @@
+{
+  "schemaVersion":1,
+  "id":"extracellular-field.source-sink",
+  "title":"Local source and first-order sink",
+  "summary":"Checks explicit local source injection, source clearing, first-order removal, and non-negativity.",
+  "domain":"extracellularField",
+  "tier":"analytical",
+  "deterministic":true,
+  "modelPath":"model.json",
+  "inputPath":"input.json",
+  "reference":{"kind":"analytical","engine":"explicit source-sink update","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"c_next = max(c + dt*(q-k*c), 0)","metadata":{}},
+  "criteria":[
+    {"id":"source-step","observable":"field.concentration.after-source","unit":"concentration","comparison":"scalar","absoluteTolerance":1e-7,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"sink-step","observable":"field.concentration.after-sink","unit":"concentration","comparison":"scalar","absoluteTolerance":1e-7,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"source-cleared","observable":"field.source.after-step","unit":"boolean","comparison":"topologyInvariant","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{"predicate":"source==0"}}
+  ],
+  "tags":["deterministic","field","phase-1","source-sink"],
+  "requiredProfiles":["scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion":1,
+  "id":"extracellular-field.uniform-diffusion",
+  "title":"Uniform-field diffusion invariant",
+  "summary":"Checks that a spatially uniform field remains unchanged under the six-neighbor diffusion stencil.",
+  "domain":"extracellularField",
+  "tier":"analytical",
+  "deterministic":true,
+  "modelPath":"model.json",
+  "inputPath":"input.json",
+  "reference":{"kind":"analytical","engine":"discrete Laplacian invariant","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"The discrete Laplacian of a constant field is zero","metadata":{}},
+  "criteria":[
+    {"id":"uniform-value","observable":"field.maximum-absolute-change","unit":"concentration","comparison":"scalar","absoluteTolerance":1e-7,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"finite-nonnegative","observable":"field.values","unit":"boolean","comparison":"topologyInvariant","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{"predicate":"finite&&value>=0"}}
+  ],
+  "tags":["deterministic","diffusion","field","phase-1"],
+  "requiredProfiles":["scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

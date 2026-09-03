@@ -57,18 +57,19 @@ final class ReproducibilityValidationTests: XCTestCase {
         }
     }
 
-    func testReplayCertificateRequiresBackendCheckpointStateWhenConfigured() async throws {
-        let base = CPUReferenceTissueBackend(
-            capabilities: ValidationFixtures.capabilities(
-                name: "non-checkpoint-wrapper-base"
-            )
-        )
-        let wrapper = try FaultInjectingTissueBackend(
-            wrapped: base,
-            plan: RuntimeFaultPlan(rules: [])
-        )
+    func testReplayCertificateRejectsMissingBackendCheckpointIdentity() async throws {
         let verifier = RuntimeReproducibilityVerifier(
-            backendFactory: { wrapper },
+            backendFactory: {
+                let base = CPUReferenceTissueBackend(
+                    capabilities: ValidationFixtures.capabilities(
+                        name: "non-checkpoint-wrapper-base"
+                    )
+                )
+                return try FaultInjectingTissueBackend(
+                    wrapped: base,
+                    plan: RuntimeFaultPlan(rules: [])
+                )
+            },
             model: ValidationFixtures.emptyModel(),
             initialState: ValidationFixtures.passiveState(),
             configuration: RuntimeReproducibilityConfiguration(
@@ -78,11 +79,11 @@ final class ReproducibilityValidationTests: XCTestCase {
             )
         )
 
-        do {
-            _ = try await verifier.verify()
-            XCTFail("A backend factory that reuses one actor should not complete repeated loading")
-        } catch {
-            XCTAssertTrue(String(describing: error).contains("already"))
-        }
+        let certificate = try await verifier.verify()
+        XCTAssertFalse(certificate.passed)
+        XCTAssertEqual(certificate.runs.count, 2)
+        XCTAssertTrue(certificate.runs.allSatisfy {
+            $0.failureDescription?.contains("checkpoint state") == true
+        })
     }
 }

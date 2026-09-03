@@ -267,7 +267,7 @@ inline void nt_emit_event(
 inline NTVMResult nt_run_vm(
     uint startPC,
     uint endPC,
-    const device NTMechanismProgram &program,
+    const thread NTMechanismProgram &program,
     device float *state,
     const device NTMechanismInstruction *instructions,
     const device float *constants,
@@ -488,7 +488,7 @@ inline NTVMResult nt_run_vm(
 inline uint nt_run_entry(
     uint start,
     uint count,
-    const device NTMechanismProgram &program,
+    const thread NTMechanismProgram &program,
     device float *state,
     const device NTMechanismInstruction *instructions,
     const device float *constants,

@@ -7,7 +7,6 @@ using namespace metal;
 constant uint NT_ABI_VERSION = 1u;
 constant uint NT_INVALID_INDEX = 0xFFFFFFFFu;
 constant float NT_TICK_MILLISECONDS = 0.025f;
-constant float NT_EPSILON = 1.0e-12f;
 
 struct NTRange {
     uint lowerBound;
@@ -246,6 +245,32 @@ inline uint2 nt_split_u64(ulong value) {
 
 inline float nt_clamp01(float value) {
     return clamp(value, 0.0f, 1.0f);
+}
+
+/// Metal 3.2 does not permit taking the address of a component of a vector
+/// for an atomic operation. Operate on the component's 32-bit storage word
+/// with a CAS loop instead; the host ABI remains unchanged and the operation
+/// preserves the FP32 representation used by the authoritative state.
+inline void nt_atomic_add_float_component(device float4* vector, uint component, float value) {
+    device atomic_uint* address = reinterpret_cast<device atomic_uint*>(vector) + component;
+    uint expected = atomic_load_explicit(address, memory_order_relaxed);
+    while (true) {
+        const float updated = as_type<float>(expected) + value;
+        const uint desired = as_type<uint>(updated);
+        if (atomic_compare_exchange_weak_explicit(
+                address,
+                &expected,
+                desired,
+                memory_order_relaxed,
+                memory_order_relaxed)) {
+            return;
+        }
+    }
+}
+
+inline void nt_atomic_store_float_component(device float4* vector, uint component, float value) {
+    device atomic_uint* address = reinterpret_cast<device atomic_uint*>(vector) + component;
+    atomic_store_explicit(address, as_type<uint>(value), memory_order_relaxed);
 }
 
 inline bool nt_finite3(float4 value) {

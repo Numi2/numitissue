@@ -120,7 +120,7 @@ inline float nt_falling_factorial(float amount, uint order) {
 }
 
 inline float nt_stochastic_propensity(
-    const thread NTMolecularReaction &reaction,
+    const NTMolecularReaction reaction,
     const thread float *species,
     uint speciesCount,
     float volumeLiters,
@@ -164,7 +164,7 @@ inline float nt_deterministic_rate(
 }
 
 inline void nt_apply_firing(
-    const thread NTMolecularReaction &reaction,
+    const NTMolecularReaction reaction,
     thread float *species,
     uint speciesCount,
     float firingCount,

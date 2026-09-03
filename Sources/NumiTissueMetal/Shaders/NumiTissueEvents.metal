@@ -108,7 +108,7 @@ kernel void nt_deliver_events(
     const ulong startTick = nt_u64(r.header->phaseStartTickLo, r.header->phaseStartTickHi);
     const ulong endTick = nt_u64(r.header->phaseEndTickLo, r.header->phaseEndTickHi);
     const uint bucket = nt_event_bucket(r, startTick);
-    const uint count = atomic_load_explicit(&r.eventBucketCounts[bucket], memory_order_acquire);
+    const uint count = atomic_load_explicit(&r.eventBucketCounts[bucket], memory_order_relaxed);
     const uint bucketCapacity = max(r.header->eventCapacity / NT_EVENT_BUCKETS, 1u);
     if (gid >= min(count, bucketCapacity)) { return; }
 
@@ -123,20 +123,20 @@ kernel void nt_deliver_events(
 
     threadgroup_barrier(mem_flags::mem_device);
     if (gid == 0u && endTick > startTick) {
-        atomic_store_explicit(&r.eventBucketCounts[bucket], 0u, memory_order_release);
+        atomic_store_explicit(&r.eventBucketCounts[bucket], 0u, memory_order_relaxed);
     }
 }
 
 inline void nt_prepare_synaptic_accumulator(device NTCompartmentState& compartment, uint tickToken) {
     device atomic_uint* stamp = reinterpret_cast<device atomic_uint*>(&compartment.reserved);
     while (true) {
-        uint observed = atomic_load_explicit(stamp, memory_order_acquire);
+        uint observed = atomic_load_explicit(stamp, memory_order_relaxed);
         if ((observed & ~NT_CURRENT_RESET_LOCK) == tickToken && (observed & NT_CURRENT_RESET_LOCK) == 0u) { return; }
         if ((observed & NT_CURRENT_RESET_LOCK) != 0u) { continue; }
         uint expected = observed;
-        if (atomic_compare_exchange_weak_explicit(stamp, &expected, tickToken | NT_CURRENT_RESET_LOCK, memory_order_acq_rel, memory_order_relaxed)) {
-            compartment.injectedSynapticCalciumSodium.y = 0.0f;
-            atomic_store_explicit(stamp, tickToken, memory_order_release);
+        if (atomic_compare_exchange_weak_explicit(stamp, &expected, tickToken | NT_CURRENT_RESET_LOCK, memory_order_relaxed, memory_order_relaxed)) {
+            nt_atomic_store_float_component(&compartment.injectedSynapticCalciumSodium, 1u, 0.0f);
+            atomic_store_explicit(stamp, tickToken, memory_order_relaxed);
             return;
         }
     }
@@ -196,8 +196,7 @@ kernel void nt_decay_synapses(
     nt_prepare_synaptic_accumulator(compartment, tickToken);
     const float voltage = compartment.voltagePreviousCapacitanceAxial.x;
     const float current = synapse.weightConductanceUtilizationResources.y * (voltage - reversal);
-    device atomic_float* accumulator = reinterpret_cast<device atomic_float*>(&compartment.injectedSynapticCalciumSodium.y);
-    atomic_fetch_add_explicit(accumulator, current, memory_order_relaxed);
+    nt_atomic_add_float_component(&compartment.injectedSynapticCalciumSodium, 1u, current);
 }
 
 /// SourceRouteIndex is the source compartment index in the packed runtime representation.

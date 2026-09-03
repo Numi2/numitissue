@@ -5,7 +5,6 @@ using namespace metal;
 #define NUMITISSUE_FIELDS
 
 constant uint NT_FIELD_PARAMETER_STRIDE = 8u;
-constant uint NT_CELL_PROGRAM_PARAMETER_STRIDE_FIELDS = 8u;
 constant uint NT_GLIAL_PARAMETER_STRIDE = 16u;
 constant uint NT_CELL_KIND_ASTROCYTE = 4u;
 constant uint NT_CELL_KIND_OLIGODENDROCYTE_PRECURSOR = 5u;
@@ -102,14 +101,12 @@ inline device NTFieldState* nt_cell_field(
 
 inline void nt_atomic_field_source(device NTFieldState* field, float amount) {
     if (field == nullptr || amount == 0.0f) { return; }
-    device atomic_float* source = reinterpret_cast<device atomic_float*>(&field->concentrationSourceSinkDiffusion.y);
-    atomic_fetch_add_explicit(source, amount, memory_order_relaxed);
+    nt_atomic_add_float_component(&field->concentrationSourceSinkDiffusion, 1u, amount);
 }
 
 inline void nt_atomic_field_sink(device NTFieldState* field, float amount) {
     if (field == nullptr || amount == 0.0f) { return; }
-    device atomic_float* sink = reinterpret_cast<device atomic_float*>(&field->concentrationSourceSinkDiffusion.z);
-    atomic_fetch_add_explicit(sink, amount, memory_order_relaxed);
+    nt_atomic_add_float_component(&field->concentrationSourceSinkDiffusion, 2u, amount);
 }
 
 /// Red-black finite-volume diffusion/reaction update. Diffusion, decay, baseline and bounds are

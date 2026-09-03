@@ -25,7 +25,11 @@ inline uint nt_mechanism_base(const NTCompartmentState compartment, uint gid) {
 
 inline float nt_vtrap(float x, float y) {
     const float ratio = x / y;
-    return fabs(ratio) < 1.0e-4f ? y * (1.0f - 0.5f * ratio) : x / expm1(ratio);
+    const float ratioSquared = ratio * ratio;
+    const float expMinusOne = fabs(ratio) < 1.0e-4f
+        ? ratio + 0.5f * ratioSquared + ratio * ratioSquared / 6.0f
+        : exp(ratio) - 1.0f;
+    return fabs(ratio) < 1.0e-4f ? y * (1.0f - 0.5f * ratio) : x / expMinusOne;
 }
 
 inline float2 nt_hh_alpha_beta_m(float v) {

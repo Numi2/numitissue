@@ -43,7 +43,7 @@ public actor MetalMolecularExecutor {
         guard let queue = device.makeCommandQueue() else { throw MetalMolecularExecutorError.commandQueue }
         let source = try shaderSource ?? Self.loadShaderSource()
         let options = MTLCompileOptions()
-        options.fastMathEnabled = false
+        options.mathMode = .safe
         let library = try device.makeLibrary(source: source, options: options)
         guard let function = library.makeFunction(name: "nt_molecular_execute") else { throw MetalMolecularExecutorError.missingKernel }
         self.device = device

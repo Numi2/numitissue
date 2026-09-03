@@ -53,7 +53,7 @@ public final class MetalShaderLibrary: @unchecked Sendable {
         self.context = context
         let source = try Self.loadBundledShaderSource(additionalSource: additionalSource)
         let options = MTLCompileOptions()
-        options.fastMathEnabled = true
+        options.mathMode = .fast
         options.languageVersion = .version3_2
         options.preserveInvariance = true
         do {

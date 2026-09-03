@@ -109,10 +109,22 @@ struct NTPlasticityParameters {
 };
 
 struct NTValidationCounters {
-    atomic_uint4 fatalAndErrorCounts;
-    atomic_uint4 boundsCounts;
-    atomic_uint4 eventCounts;
-    atomic_uint4 floatingPointCounts;
+    atomic_uint fatalAndError0;
+    atomic_uint fatalAndError1;
+    atomic_uint fatalAndError2;
+    atomic_uint fatalAndError3;
+    atomic_uint bounds0;
+    atomic_uint bounds1;
+    atomic_uint bounds2;
+    atomic_uint bounds3;
+    atomic_uint events0;
+    atomic_uint events1;
+    atomic_uint events2;
+    atomic_uint events3;
+    atomic_uint floatingPoint0;
+    atomic_uint floatingPoint1;
+    atomic_uint floatingPoint2;
+    atomic_uint floatingPoint3;
     float4 extrema0;
     float4 extrema1;
 };
@@ -194,12 +206,12 @@ inline bool nt_isfinite4(float4 value) {
 }
 
 inline void nt_record_fatal(device NTValidationCounters* counters, uint lane = 0) {
-    device atomic_uint* base = reinterpret_cast<device atomic_uint*>(&counters->fatalAndErrorCounts);
+    device atomic_uint* base = &counters->fatalAndError0;
     atomic_fetch_add_explicit(base + min(lane, 3u), 1u, memory_order_relaxed);
 }
 
 inline void nt_record_error(device NTValidationCounters* counters, uint lane = 1) {
-    device atomic_uint* base = reinterpret_cast<device atomic_uint*>(&counters->fatalAndErrorCounts);
+    device atomic_uint* base = &counters->fatalAndError0;
     atomic_fetch_add_explicit(base + min(lane, 3u), 1u, memory_order_relaxed);
 }
 """#
@@ -343,14 +355,12 @@ kernel void nt_deliver_events(
     }
     float released = clamp(utilization * synapse->kinetics1.y, 0.0f, 1.0f);
     float impulse = event.payload.x * synapse->kinetics0.x * released;
-    device atomic_uint* rise = reinterpret_cast<device atomic_uint*>(&synapse->kinetics0.z);
-    device atomic_uint* decay = reinterpret_cast<device atomic_uint*>(&synapse->kinetics0.w);
-    device atomic_uint* preTrace = reinterpret_cast<device atomic_uint*>(&synapse->plasticity0.x);
-    device atomic_uint* eligibility = reinterpret_cast<device atomic_uint*>(&synapse->plasticity0.z);
-    nt_atomic_add_float(rise, impulse);
-    nt_atomic_add_float(decay, impulse);
-    nt_atomic_add_float(preTrace, 1.0f);
-    nt_atomic_add_float(eligibility, plasticity.learning0.x * synapse->plasticity1.y);
+    device atomic_uint* kinetics0 = reinterpret_cast<device atomic_uint*>(&synapse->kinetics0);
+    device atomic_uint* plasticity0 = reinterpret_cast<device atomic_uint*>(&synapse->plasticity0);
+    nt_atomic_add_float(kinetics0 + 2, impulse);
+    nt_atomic_add_float(kinetics0 + 3, impulse);
+    nt_atomic_add_float(plasticity0 + 0, 1.0f);
+    nt_atomic_add_float(plasticity0 + 2, plasticity.learning0.x * synapse->plasticity1.y);
     synapse->kinetics1.x = utilization;
     synapse->kinetics1.y *= 1.0f - utilization;
     synapse->kinetics1.w *= 1.0f - released;

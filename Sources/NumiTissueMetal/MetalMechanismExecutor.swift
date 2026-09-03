@@ -74,7 +74,7 @@ public actor MetalMechanismExecutor {
 
         let source = try shaderSource ?? Self.loadShaderSource()
         let options = MTLCompileOptions()
-        options.fastMathEnabled = false
+        options.mathMode = .safe
         let library = try device.makeLibrary(source: source, options: options)
         guard let function = library.makeFunction(name: "nt_mechanism_execute") else { throw MetalMechanismExecutorError.missingKernel }
         let pipeline = try device.makeComputePipelineState(function: function)
@@ -130,7 +130,7 @@ public actor MetalMechanismExecutor {
         guard instances.inputs.indices.contains(index), let inputBuffer else { throw MetalMechanismExecutorError.invalidInstanceIndex(index) }
         instances.inputs[index] = input
         let offset = index * MemoryLayout<MetalMechanismInstanceInput>.stride
-        withUnsafeBytes(of: input) { bytes in
+        _ = withUnsafeBytes(of: input) { bytes in
             memcpy(inputBuffer.contents().advanced(by: offset), bytes.baseAddress!, bytes.count)
         }
     }

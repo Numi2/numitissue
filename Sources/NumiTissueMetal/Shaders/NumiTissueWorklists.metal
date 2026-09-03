@@ -10,7 +10,6 @@ constant uint NT_WORKLIST_MOLECULAR = 2u;
 constant uint NT_WORKLIST_MECHANICS = 3u;
 constant uint NT_WORKLIST_DEVELOPMENT = 4u;
 constant uint NT_WORKLIST_FIDELITY = 5u;
-constant uint NT_WORKLIST_OUTPUT = 6u;
 
 inline bool nt_range_nonempty(NTRange range) { return range.count != 0u; }
 

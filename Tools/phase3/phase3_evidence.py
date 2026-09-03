@@ -773,8 +773,20 @@ def run_qualification(root: Path, output: Path) -> int:
         False,
     ))
 
-    manifest = make_manifest(output, root, audit, doctor, commands)
     manifest_path = output / MANIFEST_NAME
+    # Create a provisional manifest so the shipped Swift verifier is exercised
+    # against the same path that the final record will expose. The verifier's
+    # log is then added to the final manifest inventory in a second pass.
+    provisional = make_manifest(output, root, audit, doctor, commands)
+    write_json(manifest_path, provisional)
+    commands.append(command_record(
+        output,
+        root,
+        "cli-phase3-verify",
+        [".build/debug/numitissue", "phase3", "verify", str(manifest_path)],
+        True,
+    ))
+    manifest = make_manifest(output, root, audit, doctor, commands)
     write_json(manifest_path, manifest)
     verification = verify_manifest(manifest_path)
     sys.stdout.write(json.dumps(verification, indent=2, sort_keys=True) + "\n")

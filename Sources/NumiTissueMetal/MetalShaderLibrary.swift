@@ -21,6 +21,8 @@ public enum MetalKernel: String, Sendable, CaseIterable {
     case updateFastFields = "nt_update_fast_fields"
     case updateMolecularDomains = "nt_update_molecular_domains"
     case updateGliaAndMetabolism = "nt_update_glia_metabolism"
+    case updateMyelination = "nt_update_myelination"
+    case updateMicroglialPruning = "nt_update_microglial_pruning"
     case applyPlasticity = "nt_apply_plasticity"
     case updateCellMechanics = "nt_update_cell_mechanics"
     case updateDevelopment = "nt_update_development"

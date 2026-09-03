@@ -1,0 +1,20 @@
+{
+  "schemaVersion":1,
+  "id":"plasticity.modulated-eligibility",
+  "title":"Neuromodulator-gated eligibility update",
+  "summary":"Checks the bounded local weight update and consolidation increment produced by a dopamine-like signal.",
+  "domain":"plasticity",
+  "tier":"analytical",
+  "deterministic":true,
+  "modelPath":"model.json",
+  "inputPath":"input.json",
+  "reference":{"kind":"analytical","engine":"NumiTissue local plasticity equation","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"dw/dt = eta * modulator * eligibility","metadata":{}},
+  "criteria":[
+    {"id":"weight","observable":"synapse.weight","unit":"relative-weight","comparison":"scalar","absoluteTolerance":1e-6,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"consolidation","observable":"synapse.consolidation","unit":"1","comparison":"scalar","absoluteTolerance":1e-6,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}}
+  ],
+  "tags":["deterministic","eligibility","neuromodulation","phase-1"],
+  "requiredProfiles":["scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

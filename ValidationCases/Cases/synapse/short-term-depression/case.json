@@ -1,0 +1,21 @@
+{
+  "schemaVersion":1,
+  "id":"synapse.short-term-depression",
+  "title":"Two-pulse short-term depression",
+  "summary":"Checks release amplitude and resource depletion for two coincident unit-amplitude presynaptic events.",
+  "domain":"synapse",
+  "tier":"analytical",
+  "deterministic":true,
+  "modelPath":"model.json",
+  "inputPath":"input.json",
+  "reference":{"kind":"analytical","engine":"Tsodyks-Markram depletion invariant","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"release = amplitude * utilization * available resources","metadata":{}},
+  "criteria":[
+    {"id":"first-release","observable":"synapse.conductance.after-first","unit":"uS","comparison":"scalar","absoluteTolerance":1e-7,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"second-release","observable":"synapse.conductance.after-second","unit":"uS","comparison":"scalar","absoluteTolerance":1e-6,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"remaining-resources","observable":"synapse.resources.after-second","unit":"1","comparison":"scalar","absoluteTolerance":1e-6,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}}
+  ],
+  "tags":["deterministic","phase-1","short-term-plasticity","synapse"],
+  "requiredProfiles":["scientific"],
+  "randomSeeds":[],
+  "metadata":{}
+}

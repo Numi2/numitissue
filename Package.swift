@@ -105,6 +105,21 @@ let package = Package(
             dependencies: ["NumiTissue"],
             path: "Examples/NumiTissueExamples",
             swiftSettings: strictConcurrency
+        ),
+        .testTarget(
+            name: "NumiTissueValidationTests",
+            dependencies: [
+                "NumiTissueCore",
+                "NumiTissueModels",
+                "NumiTissueRuntime",
+                "NumiTissueIO",
+                "NumiTissueReference",
+                "NumiTissueIntegration"
+            ],
+            path: "ValidationCases",
+            exclude: ["README.md"],
+            resources: [.copy("Cases")],
+            swiftSettings: strictConcurrency
         )
     ],
     swiftLanguageModes: [.v6]

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "electrophysiology.hh-rush-larsen",
+  "title": "Hodgkin-Huxley Rush-Larsen gate update",
+  "summary": "Checks one-step m, h, and n gate updates against independently evaluated Hodgkin-Huxley rate equations.",
+  "domain": "electrophysiology",
+  "tier": "analytical",
+  "deterministic": true,
+  "modelPath": "model.json",
+  "inputPath": "input.json",
+  "reference": {"kind":"analytical","engine":"NumiTissue analytical reference","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"Hodgkin and Huxley rate equations with an exact exponential gate step","metadata":{}},
+  "criteria": [
+    {"id":"m-gate","observable":"mechanism.m","unit":"1","comparison":"scalar","absoluteTolerance":1e-7,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"h-gate","observable":"mechanism.h","unit":"1","comparison":"scalar","absoluteTolerance":1e-7,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"n-gate","observable":"mechanism.n","unit":"1","comparison":"scalar","absoluteTolerance":1e-7,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}}
+  ],
+  "tags": ["analytical","deterministic","hodgkin-huxley","phase-1"],
+  "requiredProfiles": ["scientific"],
+  "randomSeeds": [],
+  "metadata": {}
+}

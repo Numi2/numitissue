@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "electrophysiology.spike-interpolation",
+  "title": "Interpolated spike timestamp and refractory gate",
+  "summary": "Checks threshold-crossing interpolation and rejection of a repeated crossing inside the refractory interval.",
+  "domain": "electrophysiology",
+  "tier": "smoke",
+  "deterministic": true,
+  "modelPath": "model.json",
+  "inputPath": "input.json",
+  "reference": {"kind":"invariant","engine":"CPU reference spike detector","version":"1","artifactPath":"expected.json","sourceURI":null,"citation":"Linear interpolation of a threshold crossing inside an integration interval","metadata":{}},
+  "criteria": [
+    {"id":"crossing-tick","observable":"spike.arrival-tick","unit":"tick","comparison":"scalar","absoluteTolerance":0,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"refractory-tick","observable":"compartment.refractory-until","unit":"tick","comparison":"scalar","absoluteTolerance":0,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{}},
+    {"id":"duplicate-rejected","observable":"spike.refractory-duplicate","unit":"boolean","comparison":"topologyInvariant","absoluteTolerance":null,"relativeTolerance":null,"rootMeanSquareTolerance":null,"maximumSpikeTimeDifferenceMilliseconds":null,"allowedMissingFraction":null,"minimumCorrelation":null,"conservationRelativeTolerance":null,"minimumSampleCount":null,"metadata":{"predicate":"count==0"}}
+  ],
+  "tags": ["deterministic","phase-1","refractory","spike-timing"],
+  "requiredProfiles": ["scientific"],
+  "randomSeeds": [],
+  "metadata": {}
+}

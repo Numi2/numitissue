@@ -43,3 +43,29 @@ public extension RuntimeStateDigestBuilder {
         return digest.finalize()
     }
 }
+
+public extension RuntimePhaseDigestSnapshot {
+    init(
+        backendName: String,
+        numericalProfile: RuntimeNumericalProfile,
+        transaction: TransactionID,
+        phase: RuntimePhase,
+        tickRange: Range<UInt64>,
+        counts: RuntimeCapacity,
+        pendingEventCount: Int,
+        poolDigests: RuntimePoolDigests,
+        counters: RuntimeCounters,
+        metadata: [String: String] = [:]
+    ) {
+        self.backendName = backendName
+        self.numericalProfile = numericalProfile
+        self.transaction = transaction
+        self.phase = phase
+        self.tickRange = tickRange
+        self.counts = counts
+        self.pendingEventCount = pendingEventCount
+        self.poolDigests = poolDigests
+        self.counters = counters
+        self.metadata = metadata
+    }
+}

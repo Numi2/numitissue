@@ -26,6 +26,28 @@ struct Phase4Command {
         }
     }
 
+    static func printUsage() {
+        print(
+            """
+            Phase 4 standards and scientific-corpus commands:
+              numitissue phase4 status
+              numitissue phase4 conformance [swc|neuroml|lems|sonata|sbml|nmodl|nwb]
+              numitissue phase4 corpus built-in [output.json]
+              numitissue phase4 corpus candidates [output.json]
+              numitissue phase4 corpus validate <manifest.json> [development|publishable|materialized]
+              numitissue phase4 corpus verify <manifest.json> <root-directory> [report.json]
+              numitissue phase4 corpus seal <manifest.json> <root-directory> <output.json>
+              numitissue phase4 sidecar pins
+              numitissue phase4 sidecar request-digest <request.json>
+              numitissue phase4 sidecar verify-response <request.json> <response.json>
+              numitissue phase4 file sha256 <path>
+
+            Commands emit canonical JSON. They validate evidence but never install or execute
+            external environments implicitly.
+            """
+        )
+    }
+
     private static func status() throws {
         let matrix = try NumiTissueStandardConformance.phase4Baseline.validated()
         let fixture = try NumiTissuePhase4Corpus
@@ -34,17 +56,6 @@ struct Phase4Command {
         let candidates = try NumiTissuePhase4Corpus
             .candidateCatalog()
             .validated(policy: .development)
-        let pins = try NumiTissuePhase4Sidecars.all.map {
-            Phase4SidecarPinSummary(
-                sidecar: $0.sidecar,
-                implementation: $0.implementation,
-                implementationVersion: $0.implementationVersion,
-                runtime: $0.runtime,
-                runtimeVersion: $0.runtimeVersion,
-                packageVersions: $0.packageVersions,
-                sha256: try $0.sha256()
-            )
-        }
         try emit(Phase4Status(
             schemaVersion: 1,
             phase: 4,
@@ -60,11 +71,11 @@ struct Phase4Command {
             },
             candidateCorpusID: candidates.corpusID,
             candidateEntryCount: candidates.entries.count,
-            sidecars: pins,
+            sidecars: try sidecarPinSummaries(),
             validationBoundary: [
                 "Swift sources, corpus contracts and sidecar protocols are implemented.",
-                "No native build, sidecar environment, external dataset or reference simulator is implied to have passed.",
-                "Publication requires publishable-policy validation plus materialized byte verification and executable evidence."
+                "No build, sidecar environment, external dataset or reference simulator is implied to have passed.",
+                "Publication requires publishable-policy validation, materialized-byte verification and executable evidence."
             ]
         ))
     }
@@ -76,16 +87,16 @@ struct Phase4Command {
             try emit(matrix)
             return
         }
-        guard let standard = ScientificInterchangeStandard(rawValue: source.lowercased())
-                ?? ScientificInterchangeStandard.allCases.first(where: {
-                    $0.rawValue.lowercased() == source.lowercased()
-                }) else {
+        guard let standard = ScientificInterchangeStandard.allCases.first(
+            where: { $0.rawValue.lowercased() == source.lowercased() }
+        ) else {
             throw Phase4CLIError.unknownStandard(source)
         }
-        let contract = try XCTUnwrapForCLI(
-            matrix.standards.first { $0.standard == standard },
-            error: Phase4CLIError.unknownStandard(source)
-        )
+        guard let contract = matrix.standards.first(
+            where: { $0.standard == standard }
+        ) else {
+            throw Phase4CLIError.unknownStandard(source)
+        }
         try emit(Phase4ConformanceSelection(
             schemaVersion: 1,
             catalogVersion: matrix.catalogVersion,
@@ -117,7 +128,9 @@ struct Phase4Command {
             guard (1...2).contains(tail.count) else {
                 throw Phase4CLIError.usage
             }
-            let policy = try parsePolicy(tail.count == 2 ? tail[1] : "development")
+            let policy = try parsePolicy(
+                tail.count == 2 ? tail[1] : "development"
+            )
             let url = URL(fileURLWithPath: tail[0])
             let manifest = try ScientificCorpusManifest.read(
                 from: url,
@@ -161,15 +174,15 @@ struct Phase4Command {
             }
         case "seal":
             guard tail.count == 3 else { throw Phase4CLIError.usage }
-            let source = URL(fileURLWithPath: tail[0])
+            let sourceURL = URL(fileURLWithPath: tail[0])
             let root = URL(fileURLWithPath: tail[1], isDirectory: true)
             let destination = URL(fileURLWithPath: tail[2])
-            let manifest = try ScientificCorpusManifest.read(
-                from: source,
+            let source = try ScientificCorpusManifest.read(
+                from: sourceURL,
                 policy: .development
             )
             let sealed = try ScientificCorpusSealer.sealLocalFiles(
-                manifest: manifest,
+                manifest: source,
                 root: root
             )
             try sealed.write(
@@ -179,7 +192,7 @@ struct Phase4Command {
             )
             try emit(Phase4CorpusSealSummary(
                 schemaVersion: 1,
-                inputPath: source.path,
+                inputPath: sourceURL.path,
                 rootPath: root.path,
                 outputPath: destination.path,
                 corpusID: sealed.corpusID,
@@ -202,17 +215,7 @@ struct Phase4Command {
         switch command {
         case "pins":
             guard tail.isEmpty else { throw Phase4CLIError.usage }
-            try emit(try NumiTissuePhase4Sidecars.all.map {
-                Phase4SidecarPinSummary(
-                    sidecar: $0.sidecar,
-                    implementation: $0.implementation,
-                    implementationVersion: $0.implementationVersion,
-                    runtime: $0.runtime,
-                    runtimeVersion: $0.runtimeVersion,
-                    packageVersions: $0.packageVersions,
-                    sha256: try $0.sha256()
-                )
-            })
+            try emit(try sidecarPinSummaries())
         case "request-digest":
             guard tail.count == 1 else { throw Phase4CLIError.usage }
             let url = URL(fileURLWithPath: tail[0])
@@ -287,6 +290,20 @@ struct Phase4Command {
         try emit(validated)
     }
 
+    private static func sidecarPinSummaries() throws -> [Phase4SidecarPinSummary] {
+        try NumiTissuePhase4Sidecars.all.map {
+            Phase4SidecarPinSummary(
+                sidecar: $0.sidecar,
+                implementation: $0.implementation,
+                implementationVersion: $0.implementationVersion,
+                runtime: $0.runtime,
+                runtimeVersion: $0.runtimeVersion,
+                packageVersions: $0.packageVersions,
+                sha256: try $0.sha256()
+            )
+        }
+    }
+
     private static func parsePolicy(
         _ source: String
     ) throws -> ScientificCorpusPolicy {
@@ -335,48 +352,6 @@ struct Phase4Command {
         )
         FileHandle.standardOutput.write(Data([0x0A]))
     }
-
-    static func printUsage() {
-        print(
-            """
-            Phase 4 standards and scientific-corpus commands:
-              numitissue phase4 status
-              numitissue phase4 conformance [swc|neuroml|lems|sonata|sbml|nmodl|nwb]
-              numitissue phase4 corpus built-in [output.json]
-              numitissue phase4 corpus candidates [output.json]
-              numitissue phase4 corpus validate <manifest.json> [development|publishable|materialized]
-              numitissue phase4 corpus verify <manifest.json> <root-directory> [report.json]
-              numitissue phase4 corpus seal <manifest.json> <root-directory> <output.json>
-              numitissue phase4 sidecar pins
-              numitissue phase4 sidecar request-digest <request.json>
-              numitissue phase4 sidecar verify-response <request.json> <response.json>
-              numitissue phase4 file sha256 <path>
-
-            Commands are deterministic and emit canonical JSON. The CLI validates and verifies
-            evidence; it does not install Python environments or execute sidecars implicitly.
-            """
-        )
-    }
-}
-
-private enum XCTUnwrapForCLI {
-    static func call<T>(_ value: T?, error: Error) throws -> T {
-        guard let value else { throw error }
-        return value
-    }
-}
-
-private extension XCTUnwrapForCLI {
-    static func invoke<T>(_ value: T?, error: Error) throws -> T {
-        try call(value, error: error)
-    }
-}
-
-private func XCTUnwrapForCLI<T>(
-    _ value: T?,
-    error: Error
-) throws -> T {
-    try XCTUnwrapForCLI.call(value, error: error)
 }
 
 private struct Phase4Status: Encodable {

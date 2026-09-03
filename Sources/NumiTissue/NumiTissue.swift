@@ -67,16 +67,54 @@ public actor NumiTissueSession {
         self.phasePlanner = phasePlanner
     }
 
-    public func load(model: CompiledTissueModel, state: TissueRuntimeState) async throws {
+    public func load(
+        model: CompiledTissueModel,
+        state: TissueRuntimeState
+    ) async throws {
         guard !loaded else { throw NumiTissueSessionError.alreadyLoaded }
         try state.validateCapacity()
         try await backend.load(model: model, initialState: state)
-        currentTime = state.time
-        currentEpoch = state.epoch
-        loaded = true
+        installLoadedState(state)
     }
 
-    public func step(input: RuntimeInputFrame = RuntimeInputFrame(), randomSeed: UInt64) async -> NumiTissueStepReport {
+    /// Restores both authoritative biological pools and backend-specific committed state, including
+    /// delayed events. Checkpoints without opaque backend state remain loadable for compatibility,
+    /// but cannot restore queues that were not present when they were created.
+    public func load(
+        model: CompiledTissueModel,
+        checkpoint source: TissueCheckpoint,
+        expectedModelDigest: UInt64? = nil
+    ) async throws {
+        guard !loaded else { throw NumiTissueSessionError.alreadyLoaded }
+        let checkpoint = try source.validated(
+            expectedModelDigest: expectedModelDigest
+        )
+        try await backend.load(
+            model: model,
+            initialState: checkpoint.state
+        )
+        if let opaque = checkpoint.opaqueModelState {
+            guard let checkpointable = backend as?
+                    any RuntimeBackendCheckpointStateProvider else {
+                throw NumiTissueSessionError.backendCheckpointStateUnsupported(
+                    backend.capabilities.backendName
+                )
+            }
+            do {
+                try await checkpointable.restoreBackendCheckpointState(opaque)
+            } catch {
+                throw NumiTissueSessionError.backendCheckpointRestoreFailed(
+                    String(describing: error)
+                )
+            }
+        }
+        installLoadedState(checkpoint.state)
+    }
+
+    public func step(
+        input: RuntimeInputFrame = RuntimeInputFrame(),
+        randomSeed: UInt64
+    ) async -> NumiTissueStepReport {
         let transaction = TransactionID(rawValue: nextTransaction)
         nextTransaction &+= 1
         let context = phasePlanner.context(
@@ -86,26 +124,49 @@ public actor NumiTissueSession {
             randomSeed: randomSeed
         )
         guard loaded else {
-            return NumiTissueStepReport(status: .failed, context: context, errorDescription: NumiTissueSessionError.notLoaded.description)
+            return NumiTissueStepReport(
+                status: .failed,
+                context: context,
+                errorDescription: NumiTissueSessionError.notLoaded.description
+            )
         }
         var began = false
         do {
-            try await backend.beginShadowStep(context: context, input: input)
+            try await backend.beginShadowStep(
+                context: context,
+                input: input
+            )
             began = true
             for scheduled in phasePlanner.plan(startTick: currentTime.tick) {
-                try await backend.execute(phase: scheduled.phase, tickRange: scheduled.tickRange, context: context)
+                try await backend.execute(
+                    phase: scheduled.phase,
+                    tickRange: scheduled.tickRange,
+                    context: context
+                )
             }
             let output = try await backend.collectOutput(context: context)
             let issues = try await backend.validateShadow(context: context)
             let counters = await backend.counters(context: context)
             if issues.contains(where: { $0.severity == .reject }) {
                 await backend.rollbackShadow(context: context)
-                return NumiTissueStepReport(status: .rejected, context: context, output: output, issues: issues, counters: counters)
+                return NumiTissueStepReport(
+                    status: .rejected,
+                    context: context,
+                    output: output,
+                    issues: issues,
+                    counters: counters
+                )
             }
             try await backend.commitShadow(context: context)
             currentTime = context.endTime
             currentEpoch &+= 1
-            return NumiTissueStepReport(status: .committed, context: context, output: output, issues: issues, counters: counters)
+            return NumiTissueStepReport(
+                status: .committed,
+                context: context,
+                output: output,
+                issues: issues,
+                counters: counters
+            )
         } catch {
             if began { await backend.rollbackShadow(context: context) }
             return NumiTissueStepReport(
@@ -120,15 +181,23 @@ public actor NumiTissueSession {
 
     public func run(
         steps: Int,
-        input: @Sendable (_ epoch: UInt64, _ time: TissueTime) async throws -> RuntimeInputFrame,
+        input: @Sendable (
+            _ epoch: UInt64,
+            _ time: TissueTime
+        ) async throws -> RuntimeInputFrame,
         seed: @Sendable (_ epoch: UInt64) -> UInt64
     ) async throws -> [NumiTissueStepReport] {
-        guard steps >= 0 else { throw NumiTissueSessionError.invalidStepCount }
+        guard steps >= 0 else {
+            throw NumiTissueSessionError.invalidStepCount
+        }
         var reports: [NumiTissueStepReport] = []
         reports.reserveCapacity(steps)
         for _ in 0..<steps {
             let frame = try await input(currentEpoch, currentTime)
-            let report = await step(input: frame, randomSeed: seed(currentEpoch))
+            let report = await step(
+                input: frame,
+                randomSeed: seed(currentEpoch)
+            )
             reports.append(report)
             guard report.status == .committed else { break }
         }
@@ -140,37 +209,84 @@ public actor NumiTissueSession {
         return try await backend.exportCommittedState()
     }
 
+    /// Creates a complete continuation checkpoint. By default this is strict: a backend that does
+    /// not provide its non-pool committed state cannot create a scientifically resumable checkpoint.
     public func makeCheckpoint(
         modelDigest: UInt64,
         randomSeed: UInt64,
         metadata: [String: String] = [:],
-        participantState: [String: Data] = [:]
+        participantState: [String: Data] = [:],
+        requireBackendState: Bool = true
     ) async throws -> TissueCheckpoint {
         let state = try await exportState()
+        let opaqueModelState: Data?
+        if let checkpointable = backend as?
+                any RuntimeBackendCheckpointStateProvider {
+            do {
+                opaqueModelState = try await checkpointable
+                    .exportBackendCheckpointState()
+            } catch {
+                throw NumiTissueSessionError.backendCheckpointExportFailed(
+                    String(describing: error)
+                )
+            }
+        } else if requireBackendState {
+            throw NumiTissueSessionError.backendCheckpointStateUnsupported(
+                backend.capabilities.backendName
+            )
+        } else {
+            opaqueModelState = nil
+        }
+
+        var completeMetadata = metadata
+        completeMetadata["numitissue.checkpoint.backend"] =
+            backend.capabilities.backendName
+        completeMetadata["numitissue.checkpoint.backend-state"] =
+            opaqueModelState == nil ? "absent" : "present"
         return try TissueCheckpoint.make(
             state: state,
             simulatorVersion: NumiTissueBuild.semanticVersion,
             randomSeed: randomSeed,
             modelDigest: modelDigest,
-            metadata: metadata,
+            metadata: completeMetadata,
+            opaqueModelState: opaqueModelState,
             suiteParticipantState: participantState
         )
     }
 
     public func time() -> TissueTime { currentTime }
     public func epoch() -> UInt64 { currentEpoch }
+
+    private func installLoadedState(_ state: TissueRuntimeState) {
+        currentTime = state.time
+        currentEpoch = state.epoch
+        nextTransaction = max(state.epoch &+ 1, 1)
+        loaded = true
+    }
 }
 
 public enum NumiTissueSessionError: Error, Sendable, CustomStringConvertible {
     case alreadyLoaded
     case notLoaded
     case invalidStepCount
+    case backendCheckpointStateUnsupported(String)
+    case backendCheckpointExportFailed(String)
+    case backendCheckpointRestoreFailed(String)
 
     public var description: String {
         switch self {
-        case .alreadyLoaded: return "NumiTissue session is already loaded"
-        case .notLoaded: return "NumiTissue session is not loaded"
-        case .invalidStepCount: return "NumiTissue step count cannot be negative"
+        case .alreadyLoaded:
+            return "NumiTissue session is already loaded"
+        case .notLoaded:
+            return "NumiTissue session is not loaded"
+        case .invalidStepCount:
+            return "NumiTissue step count cannot be negative"
+        case .backendCheckpointStateUnsupported(let backend):
+            return "Backend \(backend) cannot export complete resumable state"
+        case .backendCheckpointExportFailed(let reason):
+            return "Backend checkpoint-state export failed: \(reason)"
+        case .backendCheckpointRestoreFailed(let reason):
+            return "Backend checkpoint-state restore failed: \(reason)"
         }
     }
 }

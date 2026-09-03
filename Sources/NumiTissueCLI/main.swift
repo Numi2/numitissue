@@ -2,7 +2,7 @@ import Foundation
 import NumiTissue
 
 @main
-struct NumiTissueCommandLine {
+struct NumiTissueCLIEntryPoint {
     static func main() async {
         do {
             try await run(Array(CommandLine.arguments.dropFirst()))
@@ -20,6 +20,9 @@ struct NumiTissueCommandLine {
         case "checkpoint": try checkpoint(Array(arguments.dropFirst()))
         case "nmodl": try nmodl(Array(arguments.dropFirst()))
         case "expression": try expression(Array(arguments.dropFirst()))
+        case "inspect-checkpoint", "compile-nmodl", "eval-expr",
+             "validate-experiment", "campaign", "screening", "organoid", "wetware":
+            try NumiTissueCommandLine.run(arguments: arguments)
         default: throw CLIError.unknownCommand(command)
         }
     }
@@ -106,10 +109,17 @@ struct NumiTissueCommandLine {
           numitissue checkpoint inspect <file.ntissue>
           numitissue nmodl compile <mechanism.mod> [output.json]
           numitissue expression parse '<formula>'
+          numitissue validate-experiment <experiment.json>
+          numitissue campaign compile <experiment.json> <output-directory> [--shards N]
+          numitissue campaign inspect <bundle-directory>
+          numitissue screening compile <study.json> <output-directory> [--shards N]
+          numitissue organoid compile <study.json> <output-directory> [--shards N]
+          numitissue wetware plan <study.json> <output.json>
+          numitissue wetware validate <protocol.json> <safety.json> [report.json]
 
-        All commands are deterministic and write machine-readable JSON except help/version.
-        Simulation execution is exposed through the Swift API so applications can select the
-        reference or Metal backend and provide their own experiment, logging and checkpoint policy.
+        Commands are deterministic and write machine-readable JSON except help/version.
+        The Swift API exposes reference and Metal execution backends, transactional suite coupling,
+        adaptive fidelity, calibration, screening and wetware optimization.
         """)
     }
 }

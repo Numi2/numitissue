@@ -9,12 +9,6 @@ internal enum NumiTissueCommandLine {
         }
         let tail = Array(arguments.dropFirst())
         switch command {
-        case "inspect-checkpoint":
-            try inspectCheckpoint(tail)
-        case "compile-nmodl":
-            try compileNMODL(tail)
-        case "eval-expr":
-            try evaluateExpression(tail)
         case "campaign":
             try campaign(tail)
         case "screening":
@@ -28,117 +22,150 @@ internal enum NumiTissueCommandLine {
         case "help", "--help", "-h":
             printUsage()
         default:
-            throw NumiTissueCLIError.unknownCommand(command)
+            throw NumiTissueCLIWorkflowError.unknownCommand(command)
         }
     }
 
+    private static let campaignOptionNames: Set<String> = [
+        "--shards",
+        "--model-sha",
+        "--artifact-sha",
+        "--created-at",
+        "--work-per-step",
+        "--work-per-intervention",
+        "--work-per-parameter"
+    ]
+
     private static func campaign(_ arguments: [String]) throws {
         guard let subcommand = arguments.first else {
-            throw NumiTissueCLIError.missingArgument("campaign subcommand")
+            throw NumiTissueCLIWorkflowError.missingArgument("campaign subcommand")
         }
-        let parsed = try NumiTissueCLIArguments(
-            Array(arguments.dropFirst()),
-            repeatableOptions: ["--artifact-sha"]
-        )
         switch subcommand {
         case "compile":
+            let parsed = try NumiTissueCLIArguments(
+                Array(arguments.dropFirst()),
+                allowedOptions: campaignOptionNames,
+                repeatableOptions: ["--artifact-sha"]
+            )
             guard parsed.positionals.count == 2 else {
-                throw NumiTissueCLIError.usage(
-                    "numitissue campaign compile <experiment.json> <output-directory> [--shards N] [--model-sha HEX] [--artifact-sha HEX]"
+                throw NumiTissueCLIWorkflowError.usage(
+                    "campaign compile <experiment.json> <output-directory> [--shards N] [--model-sha HEX] [--artifact-sha HEX]"
                 )
             }
             let definition: TissueExperimentDefinition = try readJSON(
                 at: URL(fileURLWithPath: parsed.positionals[0])
             )
-            let options = try campaignOptions(parsed)
             let bundle = try TissueExperimentCampaignCompiler.compile(
                 definition,
-                options: options,
+                options: try campaignOptions(parsed),
                 createdAt: try parsed.date("--created-at") ?? Date()
             )
-            let output = URL(fileURLWithPath: parsed.positionals[1], isDirectory: true)
+            let output = URL(
+                fileURLWithPath: parsed.positionals[1],
+                isDirectory: true
+            )
             try bundle.writeAtomically(to: output)
             try emit(CampaignCommandSummary(bundle: bundle, outputPath: output.path))
 
         case "inspect":
+            let parsed = try NumiTissueCLIArguments(
+                Array(arguments.dropFirst()),
+                allowedOptions: []
+            )
             guard parsed.positionals.count == 1 else {
-                throw NumiTissueCLIError.usage(
-                    "numitissue campaign inspect <bundle-directory>"
+                throw NumiTissueCLIWorkflowError.usage(
+                    "campaign inspect <bundle-directory>"
                 )
             }
-            let input = URL(fileURLWithPath: parsed.positionals[0], isDirectory: true)
+            let input = URL(
+                fileURLWithPath: parsed.positionals[0],
+                isDirectory: true
+            )
             let bundle = try TissueExperimentCampaignBundle.read(from: input)
             try emit(CampaignCommandSummary(bundle: bundle, outputPath: input.path))
 
         default:
-            throw NumiTissueCLIError.unknownSubcommand("campaign \(subcommand)")
+            throw NumiTissueCLIWorkflowError.unknownSubcommand(
+                "campaign \(subcommand)"
+            )
         }
     }
 
     private static func screening(_ arguments: [String]) throws {
         guard arguments.first == "compile" else {
-            throw NumiTissueCLIError.usage(
-                "numitissue screening compile <study.json> <output-directory> [--shards N]"
+            throw NumiTissueCLIWorkflowError.usage(
+                "screening compile <study.json> <output-directory> [--shards N]"
             )
         }
         let parsed = try NumiTissueCLIArguments(
             Array(arguments.dropFirst()),
+            allowedOptions: campaignOptionNames,
             repeatableOptions: ["--artifact-sha"]
         )
         guard parsed.positionals.count == 2 else {
-            throw NumiTissueCLIError.usage(
-                "numitissue screening compile <study.json> <output-directory> [--shards N]"
+            throw NumiTissueCLIWorkflowError.usage(
+                "screening compile <study.json> <output-directory> [--shards N]"
             )
         }
         let study: TissueScreeningStudy = try readJSON(
             at: URL(fileURLWithPath: parsed.positionals[0])
         )
         let bundle = try study.compileCampaign(
-            options: campaignOptions(parsed),
+            options: try campaignOptions(parsed),
             createdAt: try parsed.date("--created-at") ?? Date()
         )
-        let output = URL(fileURLWithPath: parsed.positionals[1], isDirectory: true)
+        let output = URL(
+            fileURLWithPath: parsed.positionals[1],
+            isDirectory: true
+        )
         try bundle.writeAtomically(to: output)
         try emit(CampaignCommandSummary(bundle: bundle, outputPath: output.path))
     }
 
     private static func organoid(_ arguments: [String]) throws {
         guard arguments.first == "compile" else {
-            throw NumiTissueCLIError.usage(
-                "numitissue organoid compile <study.json> <output-directory> [--shards N]"
+            throw NumiTissueCLIWorkflowError.usage(
+                "organoid compile <study.json> <output-directory> [--shards N]"
             )
         }
         let parsed = try NumiTissueCLIArguments(
             Array(arguments.dropFirst()),
+            allowedOptions: campaignOptionNames,
             repeatableOptions: ["--artifact-sha"]
         )
         guard parsed.positionals.count == 2 else {
-            throw NumiTissueCLIError.usage(
-                "numitissue organoid compile <study.json> <output-directory> [--shards N]"
+            throw NumiTissueCLIWorkflowError.usage(
+                "organoid compile <study.json> <output-directory> [--shards N]"
             )
         }
         let study: OrganoidFittingStudy = try readJSON(
             at: URL(fileURLWithPath: parsed.positionals[0])
         )
         let bundle = try study.compileCampaign(
-            options: campaignOptions(parsed),
+            options: try campaignOptions(parsed),
             createdAt: try parsed.date("--created-at") ?? Date()
         )
-        let output = URL(fileURLWithPath: parsed.positionals[1], isDirectory: true)
+        let output = URL(
+            fileURLWithPath: parsed.positionals[1],
+            isDirectory: true
+        )
         try bundle.writeAtomically(to: output)
         try emit(CampaignCommandSummary(bundle: bundle, outputPath: output.path))
     }
 
     private static func wetware(_ arguments: [String]) throws {
         guard let subcommand = arguments.first else {
-            throw NumiTissueCLIError.missingArgument("wetware subcommand")
+            throw NumiTissueCLIWorkflowError.missingArgument("wetware subcommand")
         }
-        let parsed = try NumiTissueCLIArguments(Array(arguments.dropFirst()))
+        let parsed = try NumiTissueCLIArguments(
+            Array(arguments.dropFirst()),
+            allowedOptions: []
+        )
         switch subcommand {
         case "plan":
             guard parsed.positionals.count == 2 else {
-                throw NumiTissueCLIError.usage(
-                    "numitissue wetware plan <study.json> <output.json>"
+                throw NumiTissueCLIWorkflowError.usage(
+                    "wetware plan <study.json> <output.json>"
                 )
             }
             let study: WetwareOptimizationStudy = try readJSON(
@@ -151,8 +178,8 @@ internal enum NumiTissueCommandLine {
 
         case "validate":
             guard (2...3).contains(parsed.positionals.count) else {
-                throw NumiTissueCLIError.usage(
-                    "numitissue wetware validate <protocol.json> <safety.json> [report.json]"
+                throw NumiTissueCLIWorkflowError.usage(
+                    "wetware validate <protocol.json> <safety.json> [report.json]"
                 )
             }
             let protocolValue: WetwareExperimentProtocol = try readJSON(
@@ -173,37 +200,38 @@ internal enum NumiTissueCommandLine {
             }
             try emit(report)
             if !report.passed {
-                throw NumiTissueCLIError.wetwareSafetyViolation(
+                throw NumiTissueCLIWorkflowError.wetwareSafetyViolation(
                     count: report.violations.count
                 )
             }
 
         default:
-            throw NumiTissueCLIError.unknownSubcommand("wetware \(subcommand)")
+            throw NumiTissueCLIWorkflowError.unknownSubcommand(
+                "wetware \(subcommand)"
+            )
         }
     }
 
     private static func validateExperiment(_ arguments: [String]) throws {
-        let parsed = try NumiTissueCLIArguments(arguments)
+        let parsed = try NumiTissueCLIArguments(
+            arguments,
+            allowedOptions: []
+        )
         guard parsed.positionals.count == 1 else {
-            throw NumiTissueCLIError.usage(
-                "numitissue validate-experiment <experiment.json>"
+            throw NumiTissueCLIWorkflowError.usage(
+                "validate-experiment <experiment.json>"
             )
         }
         let definition: TissueExperimentDefinition = try readJSON(
             at: URL(fileURLWithPath: parsed.positionals[0])
         )
-        let valid = try definition.validated()
-        try emit(ExperimentValidationSummary(definition: valid))
+        try emit(try ExperimentValidationSummary(definition: definition.validated()))
     }
 
     private static func campaignOptions(
         _ arguments: NumiTissueCLIArguments
     ) throws -> TissueExperimentCampaignOptions {
         let shardCount = try arguments.int("--shards") ?? 1
-        let workPerStep = try arguments.uint64("--work-per-step") ?? 1
-        let workPerIntervention = try arguments.uint64("--work-per-intervention") ?? 100
-        let workPerParameter = try arguments.uint64("--work-per-parameter") ?? 10
         let modelDigest = try arguments.one("--model-sha").map {
             try ScientificSHA256Digest(hexadecimal: $0)
         }
@@ -212,9 +240,9 @@ internal enum NumiTissueCommandLine {
         }
         return try TissueExperimentCampaignOptions(
             shardCount: shardCount,
-            workUnitsPerStep: workPerStep,
-            workUnitsPerIntervention: workPerIntervention,
-            workUnitsPerParameter: workPerParameter,
+            workUnitsPerStep: try arguments.uint64("--work-per-step") ?? 1,
+            workUnitsPerIntervention: try arguments.uint64("--work-per-intervention") ?? 100,
+            workUnitsPerParameter: try arguments.uint64("--work-per-parameter") ?? 10,
             modelArtifactDigest: modelDigest,
             requiredArtifactDigests: artifacts,
             metadata: [
@@ -224,83 +252,6 @@ internal enum NumiTissueCommandLine {
         ).validated()
     }
 
-    private static func inspectCheckpoint(_ arguments: [String]) throws {
-        let parsed = try NumiTissueCLIArguments(arguments)
-        guard parsed.positionals.count == 1 else {
-            throw NumiTissueCLIError.usage(
-                "numitissue inspect-checkpoint <path>"
-            )
-        }
-        let url = URL(fileURLWithPath: parsed.positionals[0])
-        let checkpoint = try TissueCheckpointReader.read(from: url)
-        let manifest = checkpoint.manifest
-        print("checkpoint: \(url.path)")
-        print("version: \(manifest.formatVersion)")
-        print("epoch: \(manifest.epoch)")
-        print("tick: \(manifest.time.tick)")
-        print("digest: \(manifest.modelDigest)")
-        print("arrays:")
-        for descriptor in manifest.arrays.sorted(by: { $0.name < $1.name }) {
-            print(
-                "  \(descriptor.name): count=\(descriptor.count) stride=\(descriptor.stride) bytes=\(descriptor.byteCount) offset=\(descriptor.byteOffset)"
-            )
-        }
-    }
-
-    private static func compileNMODL(_ arguments: [String]) throws {
-        let parsed = try NumiTissueCLIArguments(arguments)
-        guard (1...2).contains(parsed.positionals.count) else {
-            throw NumiTissueCLIError.usage(
-                "numitissue compile-nmodl <path> [artifact-directory]"
-            )
-        }
-        let sourceURL = URL(fileURLWithPath: parsed.positionals[0])
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let options = NMODLCompilerOptions(
-            namespace: sourceURL.deletingPathExtension().lastPathComponent
-        )
-        let result = try NMODLCompiler.compile(source, options: options)
-        print("mechanism: \(result.mechanism.name)")
-        print("digest: \(result.sourceDigest)")
-        print("bytecode words: \(result.artifact.instructions.count)")
-        print("constants: \(result.artifact.constants.count)")
-        print("state slots: \(result.artifact.stateCount)")
-        print("parameter slots: \(result.artifact.parameterCount)")
-        print("assigned slots: \(result.artifact.assignedCount)")
-        if !result.diagnostics.isEmpty {
-            print("diagnostics:")
-            for diagnostic in result.diagnostics {
-                print("  line \(diagnostic.line): \(diagnostic.message)")
-            }
-        }
-        if parsed.positionals.count == 2 {
-            let output = URL(
-                fileURLWithPath: parsed.positionals[1],
-                isDirectory: true
-            )
-            let artifactURL = try MechanismArtifactWriter.write(
-                artifact: result.artifact,
-                name: result.mechanism.name,
-                sourceDigest: result.sourceDigest,
-                diagnostics: result.diagnostics,
-                to: output
-            )
-            print("artifact: \(artifactURL.path)")
-        }
-    }
-
-    private static func evaluateExpression(_ arguments: [String]) throws {
-        guard !arguments.isEmpty else {
-            throw NumiTissueCLIError.usage(
-                "numitissue eval-expr <expression>"
-            )
-        }
-        let source = arguments.joined(separator: " ")
-        let tokens = try NumiTissueExpressionLexer(source: source).tokenize()
-        let node = try NumiTissueExpressionParser(tokens: tokens).parse()
-        print(try NumiTissueExpressionEvaluator.evaluate(node))
-    }
-
     private static func readJSON<T: Decodable>(at url: URL) throws -> T {
         do {
             return try ScientificCanonicalJSON.decode(
@@ -308,7 +259,7 @@ internal enum NumiTissueCommandLine {
                 from: Data(contentsOf: url)
             )
         } catch {
-            throw NumiTissueCLIError.readFailed(
+            throw NumiTissueCLIWorkflowError.readFailed(
                 path: url.path,
                 reason: String(describing: error)
             )
@@ -330,25 +281,21 @@ internal enum NumiTissueCommandLine {
     }
 
     private static func emit<T: Encodable>(_ value: T) throws {
-        let data = try ScientificCanonicalJSON.encode(value)
-        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(try ScientificCanonicalJSON.encode(value))
         FileHandle.standardOutput.write(Data([0x0A]))
     }
 
     private static func printUsage() {
         print(
             """
-            numitissue commands:
-              inspect-checkpoint <path>
-              compile-nmodl <path> [artifact-directory]
-              eval-expr <expression>
-              validate-experiment <experiment.json>
-              campaign compile <experiment.json> <output-directory> [--shards N] [--model-sha HEX] [--artifact-sha HEX]
-              campaign inspect <bundle-directory>
-              screening compile <study.json> <output-directory> [--shards N]
-              organoid compile <study.json> <output-directory> [--shards N]
-              wetware plan <study.json> <output.json>
-              wetware validate <protocol.json> <safety.json> [report.json]
+            Workflow commands:
+              numitissue validate-experiment <experiment.json>
+              numitissue campaign compile <experiment.json> <output-directory> [--shards N] [--model-sha HEX] [--artifact-sha HEX]
+              numitissue campaign inspect <bundle-directory>
+              numitissue screening compile <study.json> <output-directory> [--shards N]
+              numitissue organoid compile <study.json> <output-directory> [--shards N]
+              numitissue wetware plan <study.json> <output.json>
+              numitissue wetware validate <protocol.json> <safety.json> [report.json]
             """
         )
     }
@@ -402,14 +349,19 @@ private struct ExperimentValidationSummary: Encodable {
     var stepsPerTrial: Int
     var totalSteps: UInt64
 
-    init(definition: TissueExperimentDefinition) {
+    init(definition: TissueExperimentDefinition) throws {
+        let count = UInt64(definition.trials.count)
+        let steps = UInt64(definition.stepsPerTrial)
+        let product = count.multipliedReportingOverflow(by: steps)
+        guard !product.overflow else {
+            throw NumiTissueCLIWorkflowError.numericOverflow("totalSteps")
+        }
         id = definition.id
         name = definition.name
         modelDigest = definition.modelDigest
         trialCount = definition.trials.count
         stepsPerTrial = definition.stepsPerTrial
-        totalSteps = UInt64(definition.trials.count)
-            * UInt64(definition.stepsPerTrial)
+        totalSteps = product.partialValue
     }
 }
 
@@ -419,22 +371,25 @@ private struct NumiTissueCLIArguments {
 
     init(
         _ arguments: [String],
+        allowedOptions: Set<String>,
         repeatableOptions: Set<String> = []
     ) throws {
         var index = 0
         while index < arguments.count {
             let value = arguments[index]
             if value.hasPrefix("--") {
+                guard allowedOptions.contains(value) else {
+                    throw NumiTissueCLIWorkflowError.unknownOption(value)
+                }
                 guard index + 1 < arguments.count,
                       !arguments[index + 1].hasPrefix("--") else {
-                    throw NumiTissueCLIError.missingOptionValue(value)
+                    throw NumiTissueCLIWorkflowError.missingOptionValue(value)
                 }
-                let next = arguments[index + 1]
                 if options[value] != nil,
                    !repeatableOptions.contains(value) {
-                    throw NumiTissueCLIError.duplicateOption(value)
+                    throw NumiTissueCLIWorkflowError.duplicateOption(value)
                 }
-                options[value, default: []].append(next)
+                options[value, default: []].append(arguments[index + 1])
                 index += 2
             } else {
                 positionals.append(value)
@@ -446,7 +401,7 @@ private struct NumiTissueCLIArguments {
     func one(_ key: String) throws -> String? {
         let values = options[key] ?? []
         guard values.count <= 1 else {
-            throw NumiTissueCLIError.duplicateOption(key)
+            throw NumiTissueCLIWorkflowError.duplicateOption(key)
         }
         return values.first
     }
@@ -458,7 +413,7 @@ private struct NumiTissueCLIArguments {
     func int(_ key: String) throws -> Int? {
         guard let value = try one(key) else { return nil }
         guard let parsed = Int(value) else {
-            throw NumiTissueCLIError.invalidOptionValue(key, value)
+            throw NumiTissueCLIWorkflowError.invalidOptionValue(key, value)
         }
         return parsed
     }
@@ -466,7 +421,7 @@ private struct NumiTissueCLIArguments {
     func uint64(_ key: String) throws -> UInt64? {
         guard let value = try one(key) else { return nil }
         guard let parsed = UInt64(value) else {
-            throw NumiTissueCLIError.invalidOptionValue(key, value)
+            throw NumiTissueCLIWorkflowError.invalidOptionValue(key, value)
         }
         return parsed
     }
@@ -474,15 +429,16 @@ private struct NumiTissueCLIArguments {
     func date(_ key: String) throws -> Date? {
         guard let value = try one(key) else { return nil }
         guard let parsed = ISO8601DateFormatter().date(from: value) else {
-            throw NumiTissueCLIError.invalidOptionValue(key, value)
+            throw NumiTissueCLIWorkflowError.invalidOptionValue(key, value)
         }
         return parsed
     }
 }
 
-private enum NumiTissueCLIError: Error, CustomStringConvertible {
+private enum NumiTissueCLIWorkflowError: Error, CustomStringConvertible {
     case unknownCommand(String)
     case unknownSubcommand(String)
+    case unknownOption(String)
     case missingArgument(String)
     case usage(String)
     case missingOptionValue(String)
@@ -490,228 +446,32 @@ private enum NumiTissueCLIError: Error, CustomStringConvertible {
     case invalidOptionValue(String, String)
     case readFailed(path: String, reason: String)
     case wetwareSafetyViolation(count: Int)
+    case numericOverflow(String)
 
     var description: String {
         switch self {
         case .unknownCommand(let value):
-            return "Unknown command: \(value)"
+            return "unknown workflow command '\(value)'"
         case .unknownSubcommand(let value):
-            return "Unknown subcommand: \(value)"
+            return "unknown workflow subcommand '\(value)'"
+        case .unknownOption(let value):
+            return "unknown option '\(value)'"
         case .missingArgument(let value):
-            return "Missing argument: \(value)"
+            return "missing argument: \(value)"
         case .usage(let value):
-            return "Usage: \(value)"
+            return "usage: numitissue \(value)"
         case .missingOptionValue(let value):
-            return "Option \(value) requires a value"
+            return "option \(value) requires a value"
         case .duplicateOption(let value):
-            return "Option \(value) may not be repeated"
+            return "option \(value) may not be repeated"
         case .invalidOptionValue(let key, let value):
-            return "Option \(key) has invalid value \(value)"
+            return "option \(key) has invalid value '\(value)'"
         case .readFailed(let path, let reason):
-            return "Could not read \(path): \(reason)"
+            return "could not read \(path): \(reason)"
         case .wetwareSafetyViolation(let count):
-            return "Wetware protocol violates \(count) safety constraints"
-        }
-    }
-}
-
-private enum NumiTissueExpressionToken: Equatable {
-    case number(Double)
-    case plus
-    case minus
-    case star
-    case slash
-    case leftParenthesis
-    case rightParenthesis
-    case end
-}
-
-private struct NumiTissueExpressionLexer {
-    let source: String
-
-    func tokenize() throws -> [NumiTissueExpressionToken] {
-        let characters = Array(source)
-        var tokens: [NumiTissueExpressionToken] = []
-        var index = 0
-        while index < characters.count {
-            let character = characters[index]
-            if character.isWhitespace {
-                index += 1
-                continue
-            }
-            switch character {
-            case "+": tokens.append(.plus); index += 1
-            case "-": tokens.append(.minus); index += 1
-            case "*": tokens.append(.star); index += 1
-            case "/": tokens.append(.slash); index += 1
-            case "(": tokens.append(.leftParenthesis); index += 1
-            case ")": tokens.append(.rightParenthesis); index += 1
-            default:
-                guard character.isNumber || character == "." else {
-                    throw NumiTissueExpressionError.invalidCharacter(character)
-                }
-                let start = index
-                var seenExponent = false
-                index += 1
-                while index < characters.count {
-                    let next = characters[index]
-                    if next.isNumber || next == "." {
-                        index += 1
-                    } else if (next == "e" || next == "E") && !seenExponent {
-                        seenExponent = true
-                        index += 1
-                        if index < characters.count,
-                           characters[index] == "+" || characters[index] == "-" {
-                            index += 1
-                        }
-                    } else {
-                        break
-                    }
-                }
-                let text = String(characters[start..<index])
-                guard let value = Double(text), value.isFinite else {
-                    throw NumiTissueExpressionError.invalidNumber(text)
-                }
-                tokens.append(.number(value))
-            }
-        }
-        tokens.append(.end)
-        return tokens
-    }
-}
-
-private indirect enum NumiTissueExpressionNode {
-    case number(Double)
-    case unaryMinus(NumiTissueExpressionNode)
-    case add(NumiTissueExpressionNode, NumiTissueExpressionNode)
-    case subtract(NumiTissueExpressionNode, NumiTissueExpressionNode)
-    case multiply(NumiTissueExpressionNode, NumiTissueExpressionNode)
-    case divide(NumiTissueExpressionNode, NumiTissueExpressionNode)
-}
-
-private struct NumiTissueExpressionParser {
-    let tokens: [NumiTissueExpressionToken]
-    private var index = 0
-
-    init(tokens: [NumiTissueExpressionToken]) {
-        self.tokens = tokens
-    }
-
-    mutating func parse() throws -> NumiTissueExpressionNode {
-        let result = try parseExpression()
-        guard current == .end else {
-            throw NumiTissueExpressionError.trailingInput
-        }
-        return result
-    }
-
-    private var current: NumiTissueExpressionToken {
-        tokens[min(index, tokens.count - 1)]
-    }
-
-    private mutating func advance() {
-        index = min(index + 1, tokens.count - 1)
-    }
-
-    private mutating func parseExpression() throws -> NumiTissueExpressionNode {
-        var node = try parseTerm()
-        while true {
-            switch current {
-            case .plus:
-                advance()
-                node = .add(node, try parseTerm())
-            case .minus:
-                advance()
-                node = .subtract(node, try parseTerm())
-            default:
-                return node
-            }
-        }
-    }
-
-    private mutating func parseTerm() throws -> NumiTissueExpressionNode {
-        var node = try parseFactor()
-        while true {
-            switch current {
-            case .star:
-                advance()
-                node = .multiply(node, try parseFactor())
-            case .slash:
-                advance()
-                node = .divide(node, try parseFactor())
-            default:
-                return node
-            }
-        }
-    }
-
-    private mutating func parseFactor() throws -> NumiTissueExpressionNode {
-        switch current {
-        case .number(let value):
-            advance()
-            return .number(value)
-        case .minus:
-            advance()
-            return .unaryMinus(try parseFactor())
-        case .leftParenthesis:
-            advance()
-            let node = try parseExpression()
-            guard current == .rightParenthesis else {
-                throw NumiTissueExpressionError.missingRightParenthesis
-            }
-            advance()
-            return node
-        default:
-            throw NumiTissueExpressionError.expectedExpression
-        }
-    }
-}
-
-private enum NumiTissueExpressionEvaluator {
-    static func evaluate(_ node: NumiTissueExpressionNode) throws -> Double {
-        switch node {
-        case .number(let value):
-            return value
-        case .unaryMinus(let value):
-            return -(try evaluate(value))
-        case .add(let lhs, let rhs):
-            return try evaluate(lhs) + evaluate(rhs)
-        case .subtract(let lhs, let rhs):
-            return try evaluate(lhs) - evaluate(rhs)
-        case .multiply(let lhs, let rhs):
-            return try evaluate(lhs) * evaluate(rhs)
-        case .divide(let lhs, let rhs):
-            let denominator = try evaluate(rhs)
-            guard denominator != 0 else {
-                throw NumiTissueExpressionError.divisionByZero
-            }
-            return try evaluate(lhs) / denominator
-        }
-    }
-}
-
-private enum NumiTissueExpressionError: Error, CustomStringConvertible {
-    case invalidCharacter(Character)
-    case invalidNumber(String)
-    case expectedExpression
-    case missingRightParenthesis
-    case trailingInput
-    case divisionByZero
-
-    var description: String {
-        switch self {
-        case .invalidCharacter(let character):
-            return "Invalid expression character: \(character)"
-        case .invalidNumber(let text):
-            return "Invalid number: \(text)"
-        case .expectedExpression:
-            return "Expected an expression"
-        case .missingRightParenthesis:
-            return "Missing right parenthesis"
-        case .trailingInput:
-            return "Unexpected trailing input"
-        case .divisionByZero:
-            return "Division by zero"
+            return "wetware protocol violates \(count) safety constraints"
+        case .numericOverflow(let field):
+            return "numeric overflow while computing \(field)"
         }
     }
 }

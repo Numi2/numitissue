@@ -229,7 +229,7 @@ public enum NumiTissuePhase4Corpus {
                     title: "Pinned INCF SWC specification source",
                     repository: "INCF/swc-specification",
                     commit: "67a18f96db524d03430f15936755a79ce68c23be",
-                    path: "specification.md",
+                    path: "docs/source/swc.rst",
                     kind: .morphologyConnectivity
                 )
             ],
@@ -315,6 +315,18 @@ public enum NumiTissuePhase4Corpus {
         kind: ScientificCorpusEntryKind
     ) -> ScientificCorpusEntry {
         let rawURL = "https://raw.githubusercontent.com/\(repository)/\(commit)/\(path)"
+        let sourceFormat: (mediaType: String, encoding: DataStorageEncoding)
+        if path.hasSuffix(".xml") || path.hasSuffix(".xsd") {
+            sourceFormat = ("application/xml", .xml)
+        } else if path.hasSuffix(".json") {
+            sourceFormat = ("application/json", .json)
+        } else if path.hasSuffix(".md") {
+            sourceFormat = ("text/markdown", .opaque)
+        } else if path.hasSuffix(".rst") {
+            sourceFormat = ("text/x-rst", .opaque)
+        } else {
+            sourceFormat = ("text/plain", .opaque)
+        }
         return ScientificCorpusEntry(
             id: id,
             title: title,
@@ -345,8 +357,8 @@ public enum NumiTissuePhase4Corpus {
                     role: "reference-specification",
                     relativePath: "Standards/\(repository)/\(commit)/\(path)",
                     locator: .https(url: rawURL),
-                    mediaType: path.hasSuffix(".md") ? "text/markdown" : "application/xml",
-                    encoding: path.hasSuffix(".md") ? .opaque : .xml,
+                    mediaType: sourceFormat.mediaType,
+                    encoding: sourceFormat.encoding,
                     decoder: nativeDecoder(
                         "identity-reference-source",
                         version: "1",

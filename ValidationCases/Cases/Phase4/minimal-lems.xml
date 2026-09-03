@@ -6,8 +6,8 @@
   <Unit symbol="mV" dimension="voltage" power="-3"/>
   <ComponentType name="Phase4Cell">
     <Parameter name="tau" dimension="time"/>
-    <StateVariable name="v" dimension="voltage"/>
     <Dynamics>
+      <StateVariable name="v" dimension="voltage"/>
       <TimeDerivative variable="v" value="-v/tau"/>
       <OnStart>
         <StateAssignment variable="v" value="-65"/>

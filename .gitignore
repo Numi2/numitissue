@@ -1,0 +1,9 @@
+# Generated, integrity-checked Phase 3 run output.
+Phase3Artifacts/
+
+# Swift Package Manager build products.
+.build/
+
+# Python validation tools must not dirty the source checkout with bytecode.
+__pycache__/
+*.py[cod]

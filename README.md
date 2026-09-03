@@ -180,6 +180,30 @@ This creates deterministic inputs for three workflow families:
 
 See [`Examples/README.md`](Examples/README.md) for the generated files and exact commands.
 
+### Metal 4 validation boundary
+
+The repository contains a separate, explicitly selected Metal 4 execution
+path. Source contracts, host capability checks, and measured execution
+evidence are separate claims. A successful build or test run does not promote
+`performance32` and no Phase 3 command issues a production certificate.
+
+On a clean Apple Silicon checkout, run:
+
+```bash
+Tools/phase3/run_static_audits.sh
+python3 Tools/phase3/doctor.py
+Tools/phase3/run_apple_qualification.sh --output Phase3Artifacts
+python3 Tools/phase3/phase3_evidence.py verify Phase3Artifacts/manifest.json
+```
+
+The controlled runner records strict Swift builds, all Swift tests with the
+Metal differential path and API validation, sanitizer and release checks,
+shader compilation, pipeline prewarming, Python-tool syntax, and CLI smoke
+results. It also retains the state of the optional external reference
+environment. See [`Docs/Verification/PHASE3.md`](Docs/Verification/PHASE3.md)
+and [`Docs/Verification/PHASE3_STATUS.md`](Docs/Verification/PHASE3_STATUS.md)
+for the evidence boundary and remaining promotion requirements.
+
 ### Selected CLI commands
 
 ```bash
@@ -202,6 +226,12 @@ swift run numitissue organoid compile study.json fitting-output --shards 4
 # Plan and validate a wetware protocol population
 swift run numitissue wetware plan wetware-study.json initial-plan.json
 swift run numitissue wetware validate protocol.json safety-envelope.json safety-report.json
+
+# Inspect the Phase 3 contract and verify a generated evidence manifest
+swift run numitissue phase3 status
+swift run numitissue phase3 support
+swift run numitissue phase3 contract
+swift run numitissue phase3 verify Phase3Artifacts/manifest.json
 ```
 
 CLI data output is machine-readable JSON unless the command is help or version.

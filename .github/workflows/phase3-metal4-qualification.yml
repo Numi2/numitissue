@@ -1,0 +1,33 @@
+name: Phase 3 Metal 4 qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: Controlled Apple Silicon run
+    runs-on: [self-hosted, macos, arm64]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run source audit
+        run: Tools/phase3/run_static_audits.sh
+
+      - name: Run controlled qualification checks
+        run: Tools/phase3/run_apple_qualification.sh --output Phase3Artifacts
+
+      - name: Upload qualification evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-metal4-${{ github.run_id }}
+          path: Phase3Artifacts
+          if-no-files-found: error
+          retention-days: 14

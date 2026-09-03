@@ -39,7 +39,7 @@ final class AnalyticalOperatorValidationTests: XCTestCase {
         var candidate = [-75.0]
         candidate.reserveCapacity(reference.values.count)
         for _ in 1..<reference.values.count {
-            CPUReferenceKernels.solveCableTrees(
+            try ReferenceCableTreeSolver.solve(
                 state: &state,
                 dtMilliseconds: Float(step)
             )
@@ -67,6 +67,99 @@ final class AnalyticalOperatorValidationTests: XCTestCase {
         )
         XCTAssertTrue(result.passed, result.failureReasons.joined(separator: "; "))
         XCTAssertEqual(candidate.last!, parameters.steadyStateMillivolts, accuracy: 0.005)
+    }
+
+    func testTwoCompartmentCableMatchesDirectMatrixSolution() throws {
+        let dtMilliseconds = 0.1
+        let rootCapacitance = 1.0
+        let childCapacitance = 2.0
+        let rootLeak = 0.1
+        let childLeak = 0.2
+        let axial = 0.4
+        let rootSource = -6.5
+        let childSource = -12.0
+        let rootCurrent = 0.5
+        let childCurrent = -0.2
+        let rootInitial = -70.0
+        let childInitial = -50.0
+
+        let rootDiagonal = rootCapacitance / dtMilliseconds + rootLeak + axial
+        let childDiagonal = childCapacitance / dtMilliseconds + childLeak + axial
+        let rootRHS = rootCapacitance / dtMilliseconds * rootInitial + rootSource + rootCurrent
+        let childRHS = childCapacitance / dtMilliseconds * childInitial + childSource + childCurrent
+        let expected = try NumiTissueAnalyticalReferences.solveSymmetricTwoCompartment(
+            diagonal0: rootDiagonal,
+            diagonal1: childDiagonal,
+            axial: axial,
+            rhs0: rootRHS,
+            rhs1: childRHS
+        )
+
+        var state = makeState(compartmentCount: 2)
+        state.compartments = [
+            RuntimeCompartmentState(
+                id: CompartmentID(rawValue: 10),
+                neuronIndex: 0,
+                voltageMillivolts: Float(rootInitial),
+                previousVoltageMillivolts: Float(rootInitial),
+                capacitanceNanofarads: Float(rootCapacitance),
+                injectedCurrentNanoamps: Float(rootCurrent)
+            ),
+            RuntimeCompartmentState(
+                id: CompartmentID(rawValue: 11),
+                neuronIndex: 0,
+                parentIndex: 0,
+                voltageMillivolts: Float(childInitial),
+                previousVoltageMillivolts: Float(childInitial),
+                capacitanceNanofarads: Float(childCapacitance),
+                axialConductanceMicrosiemens: Float(axial),
+                injectedCurrentNanoamps: Float(childCurrent)
+            )
+        ]
+        state.mechanismState = Array(repeating: 0, count: 32)
+        state.mechanismState[10] = Float(rootLeak)
+        state.mechanismState[11] = Float(rootSource)
+        state.mechanismState[26] = Float(childLeak)
+        state.mechanismState[27] = Float(childSource)
+
+        try ReferenceCableTreeSolver.solve(
+            state: &state,
+            dtMilliseconds: Float(dtMilliseconds)
+        )
+
+        XCTAssertEqual(Double(state.compartments[0].voltageMillivolts), expected.0, accuracy: 1e-5)
+        XCTAssertEqual(Double(state.compartments[1].voltageMillivolts), expected.1, accuracy: 1e-5)
+        XCTAssertEqual(state.compartments[0].previousVoltageMillivolts, Float(rootInitial))
+        XCTAssertEqual(state.compartments[1].previousVoltageMillivolts, Float(childInitial))
+    }
+
+    func testCableForestRejectsTopologyWithoutRoot() {
+        var state = makeState(compartmentCount: 2)
+        state.compartments = [
+            RuntimeCompartmentState(
+                id: CompartmentID(rawValue: 12),
+                neuronIndex: 0,
+                parentIndex: 1,
+                capacitanceNanofarads: 1,
+                axialConductanceMicrosiemens: 0.1
+            ),
+            RuntimeCompartmentState(
+                id: CompartmentID(rawValue: 13),
+                neuronIndex: 0,
+                parentIndex: 0,
+                capacitanceNanofarads: 1,
+                axialConductanceMicrosiemens: 0.1
+            )
+        ]
+        state.mechanismState = Array(repeating: 0, count: 32)
+
+        XCTAssertThrowsError(
+            try ReferenceCableTreeSolver.solve(state: &state, dtMilliseconds: 0.025)
+        ) { error in
+            guard case ReferenceCableTreeError.noRoot = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
     }
 
     func testHodgkinHuxleyRushLarsenGateUpdate() throws {

@@ -1,0 +1,50 @@
+{
+  "inputs": [
+    {
+      "byteCount": 451,
+      "id": "model",
+      "mediaType": "application/json",
+      "metadata": {},
+      "relativePath": "hh-single-cell.json",
+      "role": "model",
+      "sha256": "26740bb52b442d8cd2a8a3b3b6f458a15071896e02a41d882c81bd06ffa44aff"
+    }
+  ],
+  "metadata": {
+    "example": "phase4"
+  },
+  "operation": "simulate",
+  "parameters": {},
+  "randomSeed": 1,
+  "requestID": "phase4-jaxley-hh",
+  "schemaVersion": 1,
+  "selection": {
+    "electrodeIDs": [],
+    "featureNames": [],
+    "maximumOutputBytes": 16777216,
+    "maximumRecords": 1000,
+    "maximumSamplesPerSeries": 1000000,
+    "metadata": {},
+    "objectPaths": [],
+    "subjectIDs": []
+  },
+  "sidecar": "jaxley",
+  "toolchain": {
+    "implementation": "numitissue-jaxley",
+    "implementationVersion": "1",
+    "metadata": {
+      "accelerator-policy": "cpu-reference-only",
+      "default-platform": "cpu",
+      "entrypoint": "Tools/numitissue-jaxley/numitissue_jaxley.py"
+    },
+    "packageVersions": {
+      "jax": "0.11.1",
+      "jaxlib": "0.11.1",
+      "jaxley": "0.13.0"
+    },
+    "runtime": "python",
+    "runtimeVersion": ">=3.12,<3.15",
+    "sidecar": "jaxley",
+    "standardVersions": {}
+  }
+}

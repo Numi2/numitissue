@@ -31,6 +31,7 @@ public enum MetalKernel: String, Sendable, CaseIterable {
     case updateAdaptiveFidelity = "nt_update_adaptive_fidelity"
     case collectOutputs = "nt_collect_outputs"
     case validateState = "nt_validate_state"
+    case digestShadowState = "nt_digest_shadow_state"
 }
 
 public struct MetalPipelineKey: Hashable, Sendable {
@@ -124,7 +125,8 @@ public final class MetalShaderLibrary: @unchecked Sendable {
             "NumiTissueFields",
             "NumiTissueMolecular",
             "NumiTissueDevelopment",
-            "NumiTissueValidation"
+            "NumiTissueValidation",
+            "NumiTissueDifferential"
         ]
         var source = ""
         for name in fileNames {

@@ -147,6 +147,7 @@ public struct DefaultCultureRuntimeDriver: CultureProductionRuntimeDriver, Senda
         guard requiredFrames >= 3, requiredFrames <= maximumFrames else {
             throw CultureTwinError.invalid("runtime trace exceeds recording frame bound")
         }
+        let topologyFingerprint = try CultureRuntimeTopologyFingerprint.value(state)
 
         let backend = try backendFactory()
         let runtime = NumiTissueRuntime(
@@ -179,6 +180,9 @@ public struct DefaultCultureRuntimeDriver: CultureProductionRuntimeDriver, Senda
                 throw CultureTwinError.invalid("runtime culture sample transaction was not committed")
             }
             state = try await runtime.snapshot()
+            guard try CultureRuntimeTopologyFingerprint.value(state) == topologyFingerprint else {
+                throw CultureTwinError.invalid("electrical source geometry changed inside acquisition window")
+            }
             frames.append(CultureRuntimeObservationFrame(
                 sampleIndex: sampleIndex,
                 timeSeconds: Double(state.time.tick) * 25e-6,
@@ -207,7 +211,8 @@ public struct DefaultCultureRuntimeDriver: CultureProductionRuntimeDriver, Senda
             metadata: [
                 "member": String(memberID),
                 "culture-session": request.session.id,
-                "sampling-ticks": String(ticksPerSample)
+                "sampling-ticks": String(ticksPerSample),
+                "topology-fingerprint": String(topologyFingerprint)
             ]
         )
         let finalData = try finalContinuation.encoded()
@@ -217,11 +222,12 @@ public struct DefaultCultureRuntimeDriver: CultureProductionRuntimeDriver, Senda
         return try CultureRuntimeSimulationTrace(
             frames: frames,
             finalOpaqueState: finalData,
-            topologyRevision: state.epoch,
+            topologyRevision: topologyFingerprint,
             metadata: [
                 "backend": backend.name,
                 "sample-rate-hz": String(sampleRateHertz),
-                "tick-aligned": "true"
+                "tick-aligned": "true",
+                "topology-fingerprint-kind": "fnv1a64-cache-key"
             ]
         ).validated(maximumFrames: maximumFrames)
     }

@@ -2,149 +2,120 @@ import Foundation
 import NumiTissueCore
 import NumiTissueRuntime
 
-/// Maps runtime compartments onto extracellular current sources and derives the net outward
-/// transmembrane current from discrete compartment charge balance.
-///
-/// Sign convention:
-/// - positive axial current is positive *into* the compartment;
-/// - positive injected current is positive *into* the compartment;
-/// - positive returned transmembrane current is positive *outward* into extracellular space.
-///
-/// For compartment i, KCL gives:
-///   I_mem,out = I_injected + I_axial,in - C dV/dt
-/// where synaptic conductance current is already part of the membrane current and therefore is
-/// not added independently here. Units are converted from nA/nF/mV/ms to amperes.
+/// Geometry uses stable compartment IDs (plus an optional checked namespace offset), not pool
+/// indices. Topology migration must rebuild this mapping and the associated lead-field identity.
 public struct CultureRuntimeSourceMap: Sendable, Hashable, Codable {
     public var sourceIDByCompartmentIndex: [UInt64]
     public var sourceGeometryByCompartmentIndex: [CultureCurrentSource]
-
-    public init(
-        sourceIDByCompartmentIndex: [UInt64],
-        sourceGeometryByCompartmentIndex: [CultureCurrentSource]
-    ) {
+    public init(sourceIDByCompartmentIndex: [UInt64], sourceGeometryByCompartmentIndex: [CultureCurrentSource]) {
         self.sourceIDByCompartmentIndex = sourceIDByCompartmentIndex
         self.sourceGeometryByCompartmentIndex = sourceGeometryByCompartmentIndex
     }
-
     public func validated(compartmentCount: Int) throws -> Self {
-        guard compartmentCount > 0,
-              sourceIDByCompartmentIndex.count == compartmentCount,
+        guard compartmentCount > 0, sourceIDByCompartmentIndex.count == compartmentCount,
               sourceGeometryByCompartmentIndex.count == compartmentCount,
               Set(sourceIDByCompartmentIndex).count == compartmentCount else {
             throw CultureTwinError.invalid("runtime source-map dimensions")
         }
         for (index, source) in sourceGeometryByCompartmentIndex.enumerated() {
             _ = try source.validated()
-            guard source.id == sourceIDByCompartmentIndex[index] else {
-                throw CultureTwinError.invalid("runtime source-map identity")
-            }
+            guard source.id == sourceIDByCompartmentIndex[index] else { throw CultureTwinError.invalid("source identity") }
         }
         return self
     }
-
-    public static func from(
-        state: TissueRuntimeState,
-        sourceIDBase: UInt64 = 1
-    ) throws -> Self {
-        guard !state.compartments.isEmpty else {
-            throw CultureTwinError.invalid("runtime has no compartments")
+    public static func from(state: TissueRuntimeState, sourceIDBase: UInt64 = 1) throws -> Self {
+        guard !state.compartments.isEmpty, sourceIDBase > 0,
+              Set(state.compartments.map(\.id)).count == state.compartments.count else {
+            throw CultureTwinError.invalid("compartment identity or namespace")
         }
-        var segmentByCompartment: [Int: RuntimeSegmentState] = [:]
+        var segments: [Int: RuntimeSegmentState] = [:]
         for segment in state.segments where segment.compartmentIndex != RuntimeCompartmentState.invalidIndex {
             let index = Int(segment.compartmentIndex)
-            guard index < state.compartments.count else {
-                throw CultureTwinError.invalid("segment compartment index")
+            guard index < state.compartments.count, segments[index] == nil else {
+                throw CultureTwinError.invalid("invalid or ambiguous compartment geometry")
             }
-            if segmentByCompartment.updateValue(segment, forKey: index) != nil {
-                throw CultureTwinError.invalid("multiple neurite segments map to one compartment")
-            }
+            segments[index] = segment
         }
-        var ids: [UInt64] = []
         var geometry: [CultureCurrentSource] = []
-        ids.reserveCapacity(state.compartments.count)
         geometry.reserveCapacity(state.compartments.count)
         for index in state.compartments.indices {
-            let id = sourceIDBase &+ UInt64(index)
-            guard let segment = segmentByCompartment[index] else {
-                throw CultureTwinError.invalid("compartment lacks segment geometry")
-            }
+            guard let segment = segments[index], segment.radiusMicrometers.isFinite,
+                  segment.radiusMicrometers > 0 else { throw CultureTwinError.invalid("missing source geometry or radius") }
+            let sum = state.compartments[index].id.rawValue.addingReportingOverflow(sourceIDBase - 1)
+            guard !sum.overflow else { throw CultureTwinError.invalid("source identifier overflow") }
             let start = SIMD3<Double>(Double(segment.start.x), Double(segment.start.y), Double(segment.start.z))
             let end = SIMD3<Double>(Double(segment.end.x), Double(segment.end.y), Double(segment.end.z))
             let length = CultureGeometry.length(end - start)
-            let source = CultureCurrentSource(
-                id: id,
+            geometry.append(try CultureCurrentSource(id: sum.partialValue,
                 geometry: length > 1e-9 ? .uniformLine : .point,
-                startMicrometers: start,
-                endMicrometers: length > 1e-9 ? end : start,
-                radiusMicrometers: max(Double(segment.radiusMicrometers), 1e-6)
-            )
-            ids.append(id)
-            geometry.append(try source.validated())
+                startMicrometers: start, endMicrometers: length > 1e-9 ? end : start,
+                radiusMicrometers: Double(segment.radiusMicrometers)).validated())
         }
-        return try Self(
-            sourceIDByCompartmentIndex: ids,
-            sourceGeometryByCompartmentIndex: geometry
-        ).validated(compartmentCount: state.compartments.count)
+        return try Self(sourceIDByCompartmentIndex: geometry.map(\.id),
+                        sourceGeometryByCompartmentIndex: geometry).validated(compartmentCount: state.compartments.count)
     }
 }
 
+public struct CultureMembraneCurrentBalance: Sendable, Codable {
+    public let totalOutwardAmperes: [Double]
+    public let capacitiveOutwardAmperes: [Double]
+    public let ionicAndSynapticOutwardAmperes: [Double]
+}
+
 public enum CultureRuntimeCurrentExtractor {
-    public static func totalOutwardTransmembraneCurrentsAmperes(
-        state: TissueRuntimeState,
-        dtMilliseconds: Double
-    ) throws -> [Double] {
-        guard dtMilliseconds.isFinite, dtMilliseconds > 0,
-              !state.compartments.isEmpty else {
-            throw CultureTwinError.invalid("transmembrane-current extraction interval")
+    /// KCL: C*dV/dt + I_ionic,out + I_syn,out = I_injected,in + I_axial,in.
+    /// Extracellular sources use TOTAL membrane current INCLUDING capacitance:
+    /// I_total,out = I_injected,in + I_axial,in. Subtracting C*dV/dt returns the ionic/synaptic
+    /// component, not the total. nF*mV/ms = nA; uS*mV = nA; output is converted to amperes.
+    /// Current-clamp experiments also need their explicit extracellular return electrode source.
+    public static func totalOutwardTransmembraneCurrentsAmperes(state: TissueRuntimeState,
+                                                               dtMilliseconds: Double) throws -> [Double] {
+        try balance(state: state, dtMilliseconds: dtMilliseconds).totalOutwardAmperes
+    }
+    public static func balance(state: TissueRuntimeState, dtMilliseconds: Double) throws -> CultureMembraneCurrentBalance {
+        guard dtMilliseconds.isFinite, dtMilliseconds > 0, !state.compartments.isEmpty else {
+            throw CultureTwinError.invalid("transmembrane-current interval or state")
         }
-        let count = state.compartments.count
-        var children: [[Int]] = Array(repeating: [], count: count)
-        for (index, compartment) in state.compartments.enumerated() {
-            if compartment.parentIndex != RuntimeCompartmentState.invalidIndex {
-                let parent = Int(compartment.parentIndex)
-                guard parent >= 0, parent < count, parent != index else {
-                    throw CultureTwinError.invalid("compartment parent topology")
+        let cells = state.compartments, count = state.compartments.count
+        var children = [[Int]](repeating: [], count: count), roots: [Int] = []
+        for (i, c) in cells.enumerated() {
+            guard c.voltageMillivolts.isFinite, c.previousVoltageMillivolts.isFinite,
+                  c.capacitanceNanofarads.isFinite, c.capacitanceNanofarads >= 0,
+                  c.injectedCurrentNanoamps.isFinite, c.axialConductanceMicrosiemens.isFinite,
+                  c.axialConductanceMicrosiemens >= 0 else { throw CultureTwinError.invalid("compartment electrical state") }
+            if c.parentIndex == RuntimeCompartmentState.invalidIndex { roots.append(i) }
+            else {
+                let parent = Int(c.parentIndex)
+                guard parent < count, parent != i, cells[parent].neuronIndex == c.neuronIndex else {
+                    throw CultureTwinError.invalid("compartment cable topology")
                 }
-                children[parent].append(index)
+                children[parent].append(i)
             }
         }
-        var result = [Double](repeating: 0, count: count)
-        for index in 0..<count {
-            let compartment = state.compartments[index]
-            let voltage = Double(compartment.voltageMillivolts)
-            let previous = Double(compartment.previousVoltageMillivolts)
-            let capacitance = Double(compartment.capacitanceNanofarads)
-            let injected = Double(compartment.injectedCurrentNanoamps)
-            guard voltage.isFinite, previous.isFinite, capacitance.isFinite, capacitance >= 0,
-                  injected.isFinite else {
-                throw CultureTwinError.invalid("nonfinite compartment electrical state")
-            }
-            var axialIntoNanoamps = 0.0
-            if compartment.parentIndex != RuntimeCompartmentState.invalidIndex {
-                let parent = state.compartments[Int(compartment.parentIndex)]
-                let g = Double(compartment.axialConductanceMicrosiemens)
-                guard g.isFinite, g >= 0 else {
-                    throw CultureTwinError.invalid("parent axial conductance")
-                }
-                // microSiemens * millivolts = nanoamps.
-                axialIntoNanoamps += g * (Double(parent.voltageMillivolts) - voltage)
-            }
-            for childIndex in children[index] {
-                let child = state.compartments[childIndex]
-                let g = Double(child.axialConductanceMicrosiemens)
-                guard g.isFinite, g >= 0 else {
-                    throw CultureTwinError.invalid("child axial conductance")
-                }
-                axialIntoNanoamps += g * (Double(child.voltageMillivolts) - voltage)
-            }
-            // nF * mV / ms = nA.
-            let capacitiveNanoamps = capacitance * (voltage - previous) / dtMilliseconds
-            let outwardNanoamps = injected + axialIntoNanoamps - capacitiveNanoamps
-            guard outwardNanoamps.isFinite else {
-                throw CultureTwinError.invalid("transmembrane-current overflow")
-            }
-            result[index] = outwardNanoamps * 1e-9
+        var visited = 0, stack = roots
+        while let i = stack.popLast() { visited += 1; stack.append(contentsOf: children[i]) }
+        guard visited == count else { throw CultureTwinError.invalid("cyclic compartment graph") }
+        var axial = [Double](repeating: 0, count: count)
+        // Evaluate each edge once, with equal and opposite contributions.
+        for (i, c) in cells.enumerated() where c.parentIndex != RuntimeCompartmentState.invalidIndex {
+            let parent = Int(c.parentIndex)
+            let flux = Double(c.axialConductanceMicrosiemens) *
+                (Double(cells[parent].voltageMillivolts) - Double(c.voltageMillivolts))
+            axial[i] += flux; axial[parent] -= flux
         }
-        return result
+        var total: [Double] = [], cap: [Double] = [], ionic: [Double] = []
+        total.reserveCapacity(count); cap.reserveCapacity(count); ionic.reserveCapacity(count)
+        for (i, c) in cells.enumerated() {
+            let all = Double(c.injectedCurrentNanoamps) + axial[i]
+            let capacitive = Double(c.capacitanceNanofarads) *
+                (Double(c.voltageMillivolts) - Double(c.previousVoltageMillivolts)) / dtMilliseconds
+            let channels = all - capacitive
+            guard all.isFinite, capacitive.isFinite, channels.isFinite else {
+                throw CultureTwinError.invalid("membrane current overflow")
+            }
+            total.append(all * 1e-9); cap.append(capacitive * 1e-9); ionic.append(channels * 1e-9)
+        }
+        return .init(totalOutwardAmperes: total, capacitiveOutwardAmperes: cap,
+                     ionicAndSynapticOutwardAmperes: ionic)
     }
 }

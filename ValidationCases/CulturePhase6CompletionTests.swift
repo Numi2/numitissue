@@ -15,16 +15,20 @@ final class CulturePhase6CompletionTests: XCTestCase {
                 capacitanceNanofarads: 2, axialConductanceMicrosiemens: 0.5,
                 injectedCurrentNanoamps: 1)
         ]
-        state.compartments[0].voltageMillivolts = -65
-        state.compartments[0].previousVoltageMillivolts = -65
+        let balance = try CultureRuntimeCurrentExtractor.balance(state: state, dtMilliseconds: 1)
         let currents = try CultureRuntimeCurrentExtractor.totalOutwardTransmembraneCurrentsAmperes(
-            state: state, dtMilliseconds: 1
-        )
+            state: state, dtMilliseconds: 1)
         XCTAssertEqual(currents.count, 2)
-        // Root receives 0.5 * 5 = 2.5 nA from the child.
+        // Total outward current INCLUDES capacitance: injected + net axial inflow.
         XCTAssertEqual(currents[0], 4.5e-9, accuracy: 1e-15)
-        // Child receives -2.5 nA axially and uses 2 nA capacitive current.
-        XCTAssertEqual(currents[1], -3.5e-9, accuracy: 1e-15)
+        XCTAssertEqual(currents[1], -1.5e-9, accuracy: 1e-15)
+        XCTAssertEqual(currents.reduce(0, +), 3e-9, accuracy: 1e-15)
+        XCTAssertEqual(balance.capacitiveOutwardAmperes[1], 2e-9, accuracy: 1e-15)
+        XCTAssertEqual(balance.ionicAndSynapticOutwardAmperes[1], -3.5e-9, accuracy: 1e-15)
+        for i in currents.indices {
+            XCTAssertEqual(currents[i], balance.capacitiveOutwardAmperes[i] +
+                balance.ionicAndSynapticOutwardAmperes[i], accuracy: 1e-15)
+        }
     }
 
     func testMeasurementProcessorBlanksStimulusArtifact() throws {

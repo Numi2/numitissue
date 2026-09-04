@@ -142,8 +142,8 @@ public enum CultureHierarchicalEvaluator {
         }
         return CultureHierarchicalEvaluationReport(
             groupedScores: rows,
-            donorMeanCandidateMAE: donorAccumulator.mapValues(mean),
-            batchMeanCandidateMAE: batchAccumulator.mapValues(mean),
+            donorMeanCandidateMAE: donorAccumulator.mapValues { mean($0) },
+            batchMeanCandidateMAE: batchAccumulator.mapValues { mean($0) },
             candidateOutperformedRequiredBaselines: allRequiredPass,
             minimumRelativeImprovement: minimumRelativeImprovement,
             failureReasons: Array(Set(failures)).sorted()

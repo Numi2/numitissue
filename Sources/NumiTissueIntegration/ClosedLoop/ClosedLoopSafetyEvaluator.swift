@@ -1,8 +1,8 @@
 import Foundation
 import NumiTissueIO
 
-/// A conservative reservation covering a complete pulse, including its interphase gaps.
-/// Delivered, accepted and unknown-delivery pulses retain their reservations for the session.
+/// Conservative full-pulse reservation, including interphase gaps. Accepted, executed and
+/// unknown-delivery pulses retain their reservations. No automatic refund on transport failure.
 public struct ClosedLoopExposure: Sendable, Hashable, Codable {
     public var requestID: UUID
     public var electrode: ElectrodeID
@@ -24,7 +24,6 @@ public struct ClosedLoopSafetyDecision: Sendable, Codable {
     public let exposures: [ClosedLoopExposure]
     public let totalAbsoluteChargeCoulombs: Double
     public let endNanoseconds: UInt64
-    // Initializer is module-internal. The controller always recomputes this decision itself.
 }
 
 public enum ClosedLoopSafetyEvaluator {
@@ -38,9 +37,9 @@ public enum ClosedLoopSafetyEvaluator {
         guard timestampResolutionNanoseconds > 0, !request.plan.pulses.isEmpty,
               request.plan.pulses.count <= envelope.maximumExpandedPhases / 2,
               request.plan.runtimeStimuli.count <= envelope.maximumExpandedPhases,
-              history.count <= 100_000,
-              let deadline = request.deadlineNanoseconds else {
-            throw ClosedLoopError.invalid("bounded plan and explicit deadline required")
+              Float(envelope.maximumCurrentAmperes).isFinite,
+              history.count <= 100_000, let deadline = request.deadlineNanoseconds else {
+            throw ClosedLoopError.invalid("bounded plan, representable limits and explicit deadline required")
         }
         let earliest = try LoopArithmetic.add(deviceNowNanoseconds,
             max(deviceMinimumLeadNanoseconds, envelope.minimumLeadTimeNanoseconds))
@@ -51,8 +50,7 @@ public enum ClosedLoopSafetyEvaluator {
         }
         let electrodes = Dictionary(uniqueKeysWithValues: configuration.electrodes.map { ($0.id, $0) })
         let excluded = Set(envelope.excludedElectrodes)
-        var result = [ClosedLoopExposure]()
-        var expandedCount = 0
+        var result = [ClosedLoopExposure](), expandedCount = 0
         var totalCharge = 0.0
         for pulse in request.plan.pulses {
             guard let electrode = electrodes[pulse.electrode], electrode.enabled,
@@ -68,9 +66,8 @@ public enum ClosedLoopSafetyEvaluator {
                 throw ClosedLoopError.capacity("expanded phase budget")
             }
             expandedCount += expanded.partialValue
-            var active: UInt64 = 0
-            var signedCharge = 0.0
-            var absoluteCharge = 0.0
+            var active: UInt64 = 0, roundedVirtualTicks: UInt64 = 0
+            var signedCharge = 0.0, absoluteCharge = 0.0
             for phase in pulse.phases {
                 let amplitude = Double(phase.amplitudeAmperes)
                 let duration = try LoopArithmetic.multiply(UInt64(phase.durationMicroseconds), 1_000)
@@ -85,6 +82,7 @@ public enum ClosedLoopSafetyEvaluator {
                 signedCharge += amplitude * Double(duration) * 1e-9
                 absoluteCharge += charge
                 active = try LoopArithmetic.add(active, duration)
+                roundedVirtualTicks = try LoopArithmetic.add(roundedVirtualTicks, ceilTicks(UInt64(phase.durationMicroseconds)))
             }
             guard absoluteCharge.isFinite, absoluteCharge > 0,
                   abs(signedCharge) / absoluteCharge <= envelope.maximumNetChargeFraction else {
@@ -94,14 +92,23 @@ public enum ClosedLoopSafetyEvaluator {
             guard gap.isMultiple(of: timestampResolutionNanoseconds) else {
                 throw ClosedLoopError.invalid("interphase interval is not representable")
             }
-            let length = try LoopArithmetic.add(active, LoopArithmetic.multiply(gap, UInt64(pulse.phases.count - 1)))
+            let gaps = UInt64(pulse.phases.count - 1)
+            let length = try LoopArithmetic.add(active, LoopArithmetic.multiply(gap, gaps))
             let period = try LoopArithmetic.multiply(UInt64(pulse.periodMicroseconds), 1_000)
             if pulse.repetitions > 1 {
                 guard period >= (try LoopArithmetic.add(length, envelope.minimumElectrodeRecoveryNanoseconds)),
                       period.isMultiple(of: timestampResolutionNanoseconds) else {
-                    throw ClosedLoopError.unsafe("overlapping repeated pulse or insufficient recovery")
+                    throw ClosedLoopError.unsafe("overlapping repetition or insufficient recovery")
                 }
             }
+            // Validate BOTH absolute legacy-tick arithmetic and physical relative nanoseconds
+            // before calling the legacy compiler, which otherwise uses unchecked additions.
+            let lastRepeatUs = try LoopArithmetic.multiply(UInt64(pulse.repetitions - 1), UInt64(pulse.periodMicroseconds))
+            let wholeUs = try LoopArithmetic.add(lastRepeatUs, length / 1_000)
+            _ = try LoopArithmetic.add(pulse.startTick, ceilTicks(wholeUs))
+            roundedVirtualTicks = try LoopArithmetic.add(roundedVirtualTicks,
+                LoopArithmetic.multiply(ceilTicks(UInt64(pulse.interphaseDelayMicroseconds)), gaps))
+            _ = try LoopArithmetic.add(pulse.startTick, LoopArithmetic.add(ceilTicks(lastRepeatUs), roundedVirtualTicks))
             let relative = try LoopArithmetic.multiply(pulse.startTick - request.plan.startTick, 25_000)
             let first = try LoopArithmetic.add(request.scheduledTimeNanoseconds, relative)
             for repetition in 0..<pulse.repetitions {
@@ -118,8 +125,8 @@ public enum ClosedLoopSafetyEvaluator {
             }
         }
         guard totalCharge.isFinite else { throw ClosedLoopError.invalid("total charge overflow") }
-        // Never trust a caller-supplied runtimeStimuli payload or charge summary independently
-        // of the pulse definitions. Recompile with the same explicit destination map.
+        // Physical adapters use original pulse phases. The legacy virtual cache rounds to 25 us;
+        // equality here checks integrity only, NOT physical/virtual time-resolution equivalence.
         let rebuilt = try StimulationPlanCompiler.compile(pulses: request.plan.pulses,
             configuration: configuration, electrodeDestinations: destinations,
             limits: .init(maximumAbsoluteCurrentAmperes: Float(envelope.maximumCurrentAmperes),
@@ -127,13 +134,17 @@ public enum ClosedLoopSafetyEvaluator {
                 maximumChargeDensityCoulombsPerSquareMeter: envelope.maximumPhaseChargeDensityCoulombsPerSquareMeter,
                 maximumNetChargeFraction: envelope.maximumNetChargeFraction,
                 minimumInterphaseDelayMicroseconds: 0, minimumPeriodMicroseconds: 0))
-        guard rebuilt == request.plan else { throw ClosedLoopError.invalid("compiled stimulation plan differs from pulse authority") }
+        guard rebuilt == request.plan else { throw ClosedLoopError.invalid("compiled stimulation cache differs from pulses") }
         try checkCumulative(history + result, envelope: envelope)
         return ClosedLoopSafetyDecision(
             requestSHA256: ScientificSHA256Digest(data: try ScientificCanonicalJSON.encode(request)),
             envelopeSHA256: try envelope.digest(), exposures: result,
             totalAbsoluteChargeCoulombs: totalCharge,
             endNanoseconds: result.map(\.endNanoseconds).max() ?? request.scheduledTimeNanoseconds)
+    }
+
+    private static func ceilTicks(_ microseconds: UInt64) throws -> UInt64 {
+        try LoopArithmetic.add(microseconds, 24) / 25
     }
 
     static func checkCumulative(_ exposures: [ClosedLoopExposure], envelope: ClosedLoopSafetyEnvelope) throws {
@@ -152,8 +163,8 @@ public enum ClosedLoopSafetyEvaluator {
                     throw ClosedLoopError.unsafe("electrode overlap or recovery violation across requests")
                 }
             }
-            // Conservatively count the entire charge and active duration of every pulse touching
-            // a trailing window. This never undercounts a partially overlapping pulse.
+            // Entire pulse charge/duration counts whenever a trailing window touches it.
+            // Conservative at partial-window boundaries; never undercounts partial delivery.
             var events: [(UInt64, Int, Double, Double)] = []
             for x in ordered {
                 events.append((x.startNanoseconds, 1, x.absoluteChargeCoulombs, Double(x.activeNanoseconds)))

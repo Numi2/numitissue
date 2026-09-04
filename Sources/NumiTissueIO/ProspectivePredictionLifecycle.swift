@@ -263,6 +263,7 @@ public enum ProspectivePredictionError: Error, Sendable, CustomStringConvertible
     case duplicateObservationSeries
     case observationProtocolMismatch
     case observationReplicateMismatch(String)
+    case incompleteObservationBundle
     case invalidProtocolDeviation(String)
     case invalidImmutabilityAttestation
     case immutabilityMismatch
@@ -309,6 +310,7 @@ public enum ProspectivePredictionError: Error, Sendable, CustomStringConvertible
         case .duplicateObservationSeries: return "Prospective observation bundle contains duplicate series."
         case .observationProtocolMismatch: return "Prospective observation bundle does not match the protocol."
         case .observationReplicateMismatch(let id): return "Observed replicate count does not match blinded condition \(id)."
+        case .incompleteObservationBundle: return "Prospective observations do not cover every preregistered target and replicate."
         case .invalidProtocolDeviation(let code): return "Prospective protocol deviation \(code) is invalid."
         case .invalidImmutabilityAttestation: return "Prospective immutability attestation is invalid."
         case .immutabilityMismatch: return "Observed model artifacts do not match the frozen model."

@@ -9,20 +9,23 @@ ROOT = Path(__file__).resolve().parents[2]
 REQUIRED = {
     "Sources/NumiTissueIntegration/CultureTwin/CultureLeadField.swift": ["CultureLeadFieldBuilder", "CultureCurrentSource"],
     "Sources/NumiTissueIntegration/CultureTwin/CultureRuntimeCurrentExtraction.swift": ["CultureRuntimeCurrentExtractor", "totalOutwardTransmembraneCurrentsAmperes"],
+    "Sources/NumiTissueIntegration/CultureTwin/CultureRuntimeTopologyFingerprint.swift": ["CultureRuntimeTopologyFingerprint", "fnv"],
     "Sources/NumiTissueIntegration/CultureTwin/CultureMeasurementElectronics.swift": ["CultureMeasurementProcessor", "CultureMeasurementModel"],
     "Sources/NumiTissueIntegration/CultureTwin/CultureProductionSimulationProvider.swift": ["CultureProductionRuntimeDriver", "CultureProductionSimulationProvider"],
+    "Sources/NumiTissue/DefaultCultureRuntimeDriver.swift": ["DefaultCultureRuntimeDriver", "RuntimeBackendCheckpointStateProvider", "electrical source geometry changed"],
     "Sources/NumiTissueIntegration/CultureTwin/CultureEvokedFeatures.swift": ["CultureEvokedFeatureExtractor"],
-    "Sources/NumiTissueIntegration/CultureTwin/CultureBaselineForecasters.swift": ["CultureBaselineForecaster"],
+    "Sources/NumiTissueIntegration/CultureTwin/CultureBaselineForecasters.swift": ["CultureBaselineForecaster", "independent-culture baseline"],
     "Sources/NumiTissueIntegration/CultureTwin/CultureHierarchicalEvaluation.swift": ["CultureHierarchicalEvaluator"],
     "Sources/NumiTissueIntegration/CultureTwin/CultureObservationEquivalence.swift": ["CultureObservationEquivalence"],
-    "Sources/NumiTissueIntegration/CultureTwin/CultureQualificationAuthority.swift": ["CultureQualificationAuthorityVerifier"],
+    "Sources/NumiTissueIntegration/CultureTwin/CultureQualificationAuthority.swift": ["CultureQualificationAuthorityVerifier", "ScientificFileDigester"],
     "Sources/NumiTissueIntegration/CultureTwin/CultureTwinQualification.swift": ["qualifyVerified", "file-backed authority verification"],
     "Sources/NumiTissueMetal/MetalCultureLeadField.swift": ["MetalCultureLeadField"],
     "Sources/NumiTissueMetal/Shaders/CultureLeadField.metal": ["kernel"],
     "Sources/NumiTissueData/Phase6CultureCorpus.swift": ["001268", "10.1016/j.iot.2025.101671"],
-    "Sources/NumiTissueCLI/Phase6Command.swift": ["source-complete-unqualified", "hierarchical-score", "qualify"],
+    "Sources/NumiTissueCLI/Phase6Command.swift": ["source-complete-unqualified", "hierarchical-score", "artifact-root"],
     "ValidationCases/CulturePhase6CompletionTests.swift": ["testTransmembraneCurrentUsesChargeAndAxialBalance"],
-    "Docs/Validation/Phase6.md": ["Phase 6"],
+    "ValidationCases/CulturePhase6QualificationTests.swift": ["testDigestOnlyQualificationIsDisabled"],
+    "Docs/Validation/Phase6.md": ["SOURCE COMPLETE", "SCIENTIFICALLY UNQUALIFIED"],
 }
 
 errors: list[str] = []
@@ -35,7 +38,7 @@ for relative, needles in REQUIRED.items():
     text = path.read_text(encoding="utf-8")
     texts.append(text)
     for needle in needles:
-        if needle not in text:
+        if needle.lower() not in text.lower():
             errors.append(f"{relative}: missing contract token {needle!r}")
 
 all_text = "\n".join(texts)
@@ -43,8 +46,7 @@ for marker in ("<<<<<<<", ">>>>>>>", "FIXME_PHASE6", "TODO_PHASE6"):
     if marker in all_text:
         errors.append(f"forbidden unresolved marker: {marker}")
 
-# The Phase 6 authority must not issue a certificate from the digest-only API.
-qualification = (ROOT / "Sources/NumiTissueIntegration/CultureTwin/CultureTwinQualification.swift")
+qualification = ROOT / "Sources/NumiTissueIntegration/CultureTwin/CultureTwinQualification.swift"
 if qualification.is_file():
     text = qualification.read_text(encoding="utf-8")
     digest_only = re.search(
@@ -55,13 +57,20 @@ if qualification.is_file():
     if not digest_only or "requires file-backed authority verification" not in digest_only.group("body"):
         errors.append("digest-only Phase 6 qualification is not fail-closed")
 
-# Corpus targets cannot silently float on mutable DANDI aliases.
 corpus = ROOT / "Sources/NumiTissueData/Phase6CultureCorpus.swift"
 if corpus.is_file():
     text = corpus.read_text(encoding="utf-8")
     for required in ('publishedVersion.lowercased() != "draft"', 'publishedVersion.lowercased() != "latest"'):
         if required not in text:
             errors.append("Phase 6 DANDI pin does not reject mutable aliases")
+
+runtime_driver = ROOT / "Sources/NumiTissue/DefaultCultureRuntimeDriver.swift"
+if runtime_driver.is_file():
+    text = runtime_driver.read_text(encoding="utf-8")
+    if "40_000.0 / sampleRateHertz" not in text or "25e-6" not in text:
+        errors.append("runtime driver does not bind sampling to the 25-us tick lattice")
+    if "exportBackendCheckpointState" not in text or "restoreBackendCheckpointState" not in text:
+        errors.append("runtime driver does not preserve backend-specific continuation state")
 
 if errors:
     print("Phase 6 source audit FAILED", file=sys.stderr)

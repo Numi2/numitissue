@@ -24,6 +24,7 @@ struct NumiTissueCLIEntryPoint {
         case "phase3": try Phase3Command.run(Array(arguments.dropFirst()))
         case "phase4": try Phase4Command.run(Array(arguments.dropFirst()))
         case "phase6": try Phase6Command.run(Array(arguments.dropFirst()))
+        case "phase7": try await Phase7Command.run(Array(arguments.dropFirst()))
         case "validate-experiment", "campaign", "screening", "organoid", "wetware":
             try NumiTissueCommandLine.run(arguments: arguments)
         default: throw CLIError.unknownCommand(command)
@@ -142,7 +143,16 @@ struct NumiTissueCLIEntryPoint {
           numitissue phase6 study-validate <study.json>
           numitissue phase6 score <score-request.json>
 
-        Commands are deterministic and write machine-readable JSON except help/version.
+          numitissue phase7 help
+          numitissue phase7 status
+          numitissue phase7 replay-example
+          numitissue phase7 safety-example
+          numitissue phase7 safety-check <safety-request.json>
+          numitissue phase7 journal-verify <records.jsonl> <run-uuid>
+          numitissue phase7 suite-recovery-inspect <suite.jsonl> <run-uuid>
+
+        Commands write machine-readable JSON except help/version.
+        Phase 7 replay is a software fixture, not a live-culture or hardware command.
         The Swift API exposes reference and Metal execution backends, transactional suite coupling,
         adaptive fidelity, calibration, screening, standards conformance and wetware optimization.
         """)

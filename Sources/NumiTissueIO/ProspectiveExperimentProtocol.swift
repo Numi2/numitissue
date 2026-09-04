@@ -81,6 +81,7 @@ public struct ProspectiveRandomizationPlan: Sendable, Hashable, Codable {
         guard !algorithm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               blockSize > 0,
               assignmentCount == expectedAssignments,
+              generatedScheduleSHA256 != nil,
               strata.allSatisfy(ProspectiveIdentifier.isStable),
               Set(strata).count == strata.count else {
             throw ProspectivePredictionError.invalidRandomization

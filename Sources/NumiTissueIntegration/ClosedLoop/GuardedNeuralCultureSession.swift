@@ -6,6 +6,7 @@ public protocol NonphysicalNeuralCultureBackend: NeuralCultureBackend {}
 
 public protocol WatchdogNeuralCultureBackend: InterlockedNeuralCultureBackend {
     /// Refresh an already operator-armed DEVICE-local watchdog. Must not rearm a stopped device.
+    /// Device stop must atomically reject later submissions, including requests already in flight.
     func refreshWatchdog(session: NeuralCultureSession) async throws -> ClosedLoopInterlockState
 }
 
@@ -17,9 +18,9 @@ public struct ClosedLoopAdmissionRequest: Sendable {
     public var envelopeSHA256: ScientificSHA256Digest
 }
 
-/// Application-supplied policy verification: operator approval, device-specific laboratory limits,
-/// earlier-stage results and expiry. No default implementation authorizes physical stimulation.
-/// Returned expiry is in the named device clock. This is a trusted in-process boundary, not a sandbox.
+/// Application-supplied operator, protocol, device, firmware and qualification verification.
+/// Returns an expiry in the named device clock. No default authorizes physical stimulation.
+/// This is a trusted in-process boundary, not a process sandbox or regulatory authorization.
 public typealias ClosedLoopAdmissionVerifier = @Sendable (ClosedLoopAdmissionRequest) async throws -> UInt64
 
 public actor GuardedNeuralCultureSession {
@@ -39,7 +40,7 @@ public actor GuardedNeuralCultureSession {
     private var expiry: UInt64 = 0
     private var lastDeviceTime: UInt64 = 0
     private var reservations: [ClosedLoopExposure] = []
-    private var requestIDs = Set<UUID>()
+    private var requests: [UUID: NeuralStimulationRequest] = [:]
     private var latestObservationSHA256: ScientificSHA256Digest?
     private var latestObservationEnd: UInt64?
 
@@ -58,12 +59,10 @@ public actor GuardedNeuralCultureSession {
         }
         if environment.hasPhysicalEffects {
             guard backend is any WatchdogNeuralCultureBackend, audit.durable, admission != nil else {
-                throw ClosedLoopError.unsafe("physical operation needs independent watchdog, durable journal and operator admission verifier")
+                throw ClosedLoopError.unsafe("physical operation needs independent watchdog, durable journal and admission verifier")
             }
-        } else {
-            guard backend is any NonphysicalNeuralCultureBackend else {
-                throw ClosedLoopError.unsafe("a physical backend cannot be relabeled replay or emulator")
-            }
+        } else if !(backend is any NonphysicalNeuralCultureBackend) {
+            throw ClosedLoopError.unsafe("a physical backend cannot be relabeled replay or emulator")
         }
     }
 
@@ -76,8 +75,9 @@ public actor GuardedNeuralCultureSession {
             let now = try await readClock()
             let capabilities = await backend.capabilities
             guard capabilities.supportsScheduledStimulation, capabilities.timestampResolutionNanoseconds > 0,
-                  capabilities.maximumElectrodes >= configuration.electrodes.count else {
-                throw ClosedLoopError.unsafe("device scheduling capabilities")
+                  capabilities.maximumElectrodes >= configuration.electrodes.count,
+                  capabilities.supportedSampleRatesHertz.contains(configuration.sampleRateHertz) else {
+                throw ClosedLoopError.unsafe("device scheduling or acquisition capabilities")
             }
             let request = ClosedLoopAdmissionRequest(runID: runID, session: session,
                 environment: environment, identity: identity, envelopeSHA256: try envelope.digest())
@@ -88,7 +88,7 @@ public actor GuardedNeuralCultureSession {
                 expiry = try await admission(request)
                 try await checkInterlock(now: now, through: now, refresh: false)
             } else {
-                guard let end = nonphysicalExpiryNanoseconds else { throw ClosedLoopError.invalid("bounded virtual run expiry") }
+                guard let end = nonphysicalExpiryNanoseconds else { throw ClosedLoopError.invalid("bounded virtual expiry") }
                 expiry = end
             }
             guard state == .admitting, expiry > now else { throw ClosedLoopError.latched("expired or interrupted admission") }
@@ -98,10 +98,7 @@ public actor GuardedNeuralCultureSession {
             try Task.checkCancellation()
             guard state == .admitting else { throw ClosedLoopError.latched("admission interrupted") }
             state = .armed
-        } catch {
-            await stop(reason: "admission failed: \(error)")
-            throw error
-        }
+        } catch { _ = await stop(reason: "admission failed: \(error)"); throw error }
     }
 
     public func observe(_ request: NeuralRecordingRequest) async throws -> NeuralRecording {
@@ -110,24 +107,31 @@ public actor GuardedNeuralCultureSession {
         do {
             let now = try await readClock()
             let end = try LoopArithmetic.add(request.startTimeNanoseconds, request.durationNanoseconds)
-            let estimate = Double(request.durationNanoseconds) * 1e-9 * request.sampleRateHertz
-            guard request.durationNanoseconds > 0, request.sampleRateHertz.isFinite, request.sampleRateHertz > 0,
-                  estimate.isFinite, estimate >= 1, estimate <= 1_000_000,
+            let expected = Double(request.durationNanoseconds) * 1e-9 * request.sampleRateHertz
+            guard request.durationNanoseconds > 0, request.sampleRateHertz == configuration.sampleRateHertz,
+                  request.sampleRateHertz.isFinite, request.sampleRateHertz > 0,
+                  expected.isFinite, expected >= 1, expected <= 1_000_000,
+                  abs(expected - expected.rounded()) < 1e-6,
                   !request.electrodeIDs.isEmpty, request.electrodeIDs.count <= 4096,
+                  expected * Double(request.electrodeIDs.count) <= 16_777_216,
                   Set(request.electrodeIDs).count == request.electrodeIDs.count,
                   Set(request.electrodeIDs).isSubset(of: Set(configuration.electrodes.filter(\.enabled).map(\.id))),
-                  end <= expiry, now < expiry else { throw ClosedLoopError.invalid("bounded recording request") }
-            try await checkInterlock(now: now, through: end, refresh: true)
+                  latestObservationEnd.map({ request.startTimeNanoseconds >= $0 }) ?? true,
+                  end <= expiry, now < expiry else { throw ClosedLoopError.invalid("bounded nonoverlapping recording request") }
+            try await checkInterlock(now: now, through: max(now, end), refresh: true)
             let recording = try await backend.record(session: session, request: request)
+            let returnedNow = try await readClock()
             guard state == .armed, recording.request == request, recording.droppedSamples == 0,
                   recording.frame.electrodeOrder == request.electrodeIDs,
                   recording.frame.sampleRateHertz == request.sampleRateHertz,
                   recording.frame.samplesByElectrode.count == request.electrodeIDs.count,
-                  recording.frame.sampleCount > 0, recording.frame.sampleCount <= 1_000_000,
+                  recording.frame.sampleCount == Int(expected.rounded()),
                   recording.frame.samplesByElectrode.allSatisfy({
                       $0.count == recording.frame.sampleCount && $0.allSatisfy(\.isFinite)
-                  }), recording.backendTimestampNanoseconds >= end else {
-                throw ClosedLoopError.unsafe("recording dropout, identity, timestamps or channel data")
+                  }), recording.backendTimestampNanoseconds >= end,
+                  recording.backendTimestampNanoseconds <= returnedNow,
+                  returnedNow >= end, returnedNow - end <= envelope.maximumObservationAgeNanoseconds else {
+                throw ClosedLoopError.unsafe("recording dropout, truncation, stale data, timestamps or channel shape")
             }
             for spike in recording.spikes {
                 guard request.electrodeIDs.contains(spike.electrode), spike.sampleIndex >= 0,
@@ -136,15 +140,13 @@ public actor GuardedNeuralCultureSession {
                 }
             }
             let digest = ScientificSHA256Digest(data: try ScientificCanonicalJSON.encode(recording))
-            try await log("observation", recording.backendTimestampNanoseconds,
+            try await log("observation", returnedNow,
                 ["sha256": digest.hexadecimal, "samples": String(recording.frame.sampleCount)])
+            try Task.checkCancellation()
             guard state == .armed else { throw ClosedLoopError.latched("stopped during observation") }
             latestObservationSHA256 = digest; latestObservationEnd = end
             return recording
-        } catch {
-            await stop(reason: "observation failed: \(error)")
-            throw error
-        }
+        } catch { _ = await stop(reason: "observation failed: \(error)"); throw error }
     }
 
     public func submit(_ request: NeuralStimulationRequest,
@@ -152,7 +154,7 @@ public actor GuardedNeuralCultureSession {
         guard state == .armed, !busy else { throw ClosedLoopError.latched("not armed or concurrent operation") }
         busy = true; defer { busy = false }
         do {
-            guard !requestIDs.contains(request.id), requestIDs.count < 100_000,
+            guard requests[request.id] == nil, requests.count < 100_000,
                   latestObservationSHA256 == observationSHA256, let observedEnd = latestObservationEnd else {
                 throw ClosedLoopError.invalid("duplicate request or stale observation authority")
             }
@@ -168,56 +170,52 @@ public actor GuardedNeuralCultureSession {
             }
             let decision = try ClosedLoopSafetyEvaluator.evaluate(request: request,
                 configuration: configuration, destinations: destinations, envelope: envelope,
-                deviceNowNanoseconds: now,
-                deviceMinimumLeadNanoseconds: capabilities.minimumStimulationLeadTimeNanoseconds,
+                deviceNowNanoseconds: now, deviceMinimumLeadNanoseconds: capabilities.minimumStimulationLeadTimeNanoseconds,
                 timestampResolutionNanoseconds: capabilities.timestampResolutionNanoseconds, history: reservations)
             guard decision.endNanoseconds <= expiry else { throw ClosedLoopError.unsafe("plan exceeds session expiry") }
             try await checkInterlock(now: now, through: decision.endNanoseconds, refresh: true)
             guard state == .armed else { throw ClosedLoopError.latched("stopped before reservation") }
-            // Reserve BEFORE any await or dispatch; never release on an ambiguous acknowledgement.
-            requestIDs.insert(request.id); reservations.append(contentsOf: decision.exposures)
-            try await log("stimulation-intent", now, ["id": request.id.uuidString,
-                "request": decision.requestSHA256.hexadecimal, "observation": observationSHA256.hexadecimal,
-                "policy": decision.envelopeSHA256.hexadecimal])
+            // Reserve BEFORE dispatch; never release dose on an ambiguous acknowledgement.
+            requests[request.id] = request; reservations.append(contentsOf: decision.exposures)
+            try await log("stimulation-intent", now, Intent(request: request, decision: decision,
+                observationSHA256: observationSHA256, identity: identity))
             now = try await readClock()
             let earliest = try LoopArithmetic.add(now, max(capabilities.minimumStimulationLeadTimeNanoseconds,
                                                            envelope.minimumLeadTimeNanoseconds))
             try Task.checkCancellation()
-            guard state == .armed, request.scheduledTimeNanoseconds >= earliest, now < expiry else {
-                throw ClosedLoopError.unsafe("deadline missed during admission/journaling; never execute immediately")
+            guard state == .armed, request.scheduledTimeNanoseconds >= earliest, now < expiry,
+                  now >= observedEnd, now - observedEnd <= envelope.maximumObservationAgeNanoseconds else {
+                throw ClosedLoopError.unsafe("deadline missed while journaling; never execute immediately")
             }
             let receipt: NeuralStimulationReceipt
             do { receipt = try await backend.stimulate(session: session, request: request) }
-            catch {
-                // Transport failure can follow actual delivery. At-most-once application dispatch:
-                // query/reconcile receipts outside this stopped session; do not resend this request.
-                throw ClosedLoopError.ambiguousDelivery(request.id)
-            }
-            guard receipt.requestID == request.id,
-                  receipt.acceptedAtNanoseconds >= now,
-                  receipt.acceptedAtNanoseconds <= (request.deadlineNanoseconds ?? 0) else {
-                throw ClosedLoopError.ambiguousDelivery(request.id)
-            }
-            if receipt.status == .executed {
-                guard let executed = receipt.executedAtNanoseconds,
-                      executed >= request.scheduledTimeNanoseconds,
-                      executed <= (request.deadlineNanoseconds ?? 0) else {
-                    throw ClosedLoopError.ambiguousDelivery(request.id)
-                }
-            }
+            catch { throw ClosedLoopError.ambiguousDelivery(request.id) }
+            try checkReceipt(receipt, request: request, earliestAcceptance: now)
             try await log("stimulation-receipt", receipt.acceptedAtNanoseconds, receipt)
             guard state == .armed, receipt.status == .accepted || receipt.status == .executed else {
                 throw ClosedLoopError.unsafe("stopped, rejected or cancelled stimulation")
             }
             return receipt
-        } catch {
-            await stop(reason: "dispatch failed: \(error)")
-            throw error
-        }
+        } catch { _ = await stop(reason: "dispatch failed: \(error)"); throw error }
     }
 
-    /// Callable while another actor operation is suspended. Stop is latched before transport I/O.
-    /// Failure to contact a device never becomes a successful stop acknowledgement.
+    /// Receipt queries do not resend stimuli. A failed query leaves reservations intact and stops.
+    public func reconcile(requestID: UUID) async throws -> NeuralStimulationReceipt {
+        guard state == .armed, !busy, let request = requests[requestID],
+              let device = backend as? any InterlockedNeuralCultureBackend else {
+            throw ClosedLoopError.invalid("receipt query requires a known request and interlocked adapter")
+        }
+        busy = true; defer { busy = false }
+        do {
+            let receipt = try await device.stimulationStatus(session: session, requestID: requestID)
+            try checkReceipt(receipt, request: request, earliestAcceptance: 0)
+            try await log("receipt-reconciliation", lastDeviceTime, receipt)
+            guard state == .armed else { throw ClosedLoopError.latched("stopped during receipt query") }
+            return receipt
+        } catch { _ = await stop(reason: "receipt reconciliation failed: \(error)"); throw error }
+    }
+
+    /// Latch before transport I/O. A timeout/error is not a successful stop acknowledgement.
     @discardableResult public func stop(reason: String) async -> Bool {
         state = .stopped
         var confirmed = !environment.hasPhysicalEffects
@@ -226,12 +224,28 @@ public actor GuardedNeuralCultureSession {
                 let result = try await interlocked.emergencyStop(session: session, reason: reason)
                 confirmed = result.identity == identity && result.stopConfirmed
             } catch { confirmed = false }
+        } else if !environment.hasPhysicalEffects {
+            // Replay cancellation is best-effort bookkeeping; it has no physical effects.
+            for id in requests.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
+                try? await backend.cancel(session: session, requestID: id)
+            }
         }
         do { try await log("stopped", lastDeviceTime, ["reason": reason, "confirmed": String(confirmed)]) }
         catch { /* Stop was attempted even when the audit sink failed. Session remains latched. */ }
         return confirmed
     }
 
+    private func checkReceipt(_ r: NeuralStimulationReceipt, request: NeuralStimulationRequest,
+                              earliestAcceptance: UInt64) throws {
+        guard r.requestID == request.id, r.acceptedAtNanoseconds >= earliestAcceptance,
+              r.acceptedAtNanoseconds <= (request.deadlineNanoseconds ?? 0) else {
+            throw ClosedLoopError.ambiguousDelivery(request.id)
+        }
+        if r.status == .executed {
+            guard let at = r.executedAtNanoseconds, at >= request.scheduledTimeNanoseconds,
+                  at <= (request.deadlineNanoseconds ?? 0) else { throw ClosedLoopError.ambiguousDelivery(request.id) }
+        }
+    }
     private func readClock() async throws -> UInt64 {
         let now = try await backend.backendTimeNanoseconds(session: session)
         guard now >= lastDeviceTime else { throw ClosedLoopError.unsafe("device clock moved backwards") }
@@ -243,16 +257,24 @@ public actor GuardedNeuralCultureSession {
         guard let device = backend as? any WatchdogNeuralCultureBackend else {
             throw ClosedLoopError.unsafe("device watchdog unavailable")
         }
-        let status = try await (refresh ? device.refreshWatchdog(session: session) : device.interlockState(session: session))
+        let status: ClosedLoopInterlockState
+        if refresh { status = try await device.refreshWatchdog(session: session) }
+        else { status = try await device.interlockState(session: session) }
         guard status.identity == identity, status.deviceNowNanoseconds >= now,
-              status.armedUntilNanoseconds >= through, status.autonomousWatchdogNanoseconds > 0,
+              status.armedUntilNanoseconds >= max(through, status.deviceNowNanoseconds),
+              status.autonomousWatchdogNanoseconds > 0,
               status.autonomousWatchdogNanoseconds <= envelope.maximumObservationAgeNanoseconds,
               !status.stopConfirmed, status.measuredVoltageLimitSatisfied,
-              status.temperatureKelvin.isFinite,
-              status.temperatureKelvin >= envelope.minimumTemperatureKelvin,
+              status.temperatureKelvin.isFinite, status.temperatureKelvin >= envelope.minimumTemperatureKelvin,
               status.temperatureKelvin <= envelope.maximumTemperatureKelvin else {
             throw ClosedLoopError.unsafe("interlock identity, arming, watchdog, voltage or temperature")
         }
+    }
+    private struct Intent: Encodable {
+        var request: NeuralStimulationRequest
+        var decision: ClosedLoopSafetyDecision
+        var observationSHA256: ScientificSHA256Digest
+        var identity: ClosedLoopDeviceIdentity
     }
     private func log<T: Encodable>(_ kind: String, _ time: UInt64, _ payload: T) async throws {
         try await audit.append(kind: kind, deviceNanoseconds: time, payload: ScientificCanonicalJSON.encode(payload))

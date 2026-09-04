@@ -107,16 +107,21 @@ public enum ProspectivePredictionScorer {
             let rules = protocolValue.scoringRules
                 .filter { $0.targetID == observation.targetID }
                 .sorted { $0.id < $1.id }
+            let calibrationRuleID = rules.first(where: \.primary)?.id ?? rules.first?.id
             for rule in rules {
+                let recordsCoverage = rule.id == calibrationRuleID
                 let candidateResult = try scoreSeries(
                     forecast: candidateSeries,
                     observation: observation,
                     target: target,
                     rule: rule,
+                    recordCoverage: recordsCoverage,
                     coverage: &coverageAccumulator
                 )
-                validObservations += candidateResult.validCount
-                matchedObservations += candidateResult.matchedCount
+                if recordsCoverage {
+                    validObservations += candidateResult.validCount
+                    matchedObservations += candidateResult.matchedCount
+                }
                 seriesScores.append(ProspectiveSeriesScore(
                     forecasterID: candidate.authority.identifier,
                     blindedID: observation.blindedID,

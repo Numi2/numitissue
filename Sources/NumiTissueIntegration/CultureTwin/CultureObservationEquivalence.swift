@@ -78,10 +78,11 @@ public enum CultureObservationEquivalence {
         var passed = true
         for index in cpu.indices {
             let absolute = abs(cpu[index] - metal[index])
-            let relative = absolute / max(abs(cpu[index]), abs(metal[index]), 1e-15)
+            let scale = max(max(abs(cpu[index]), abs(metal[index])), 1e-15)
+            let relative = absolute / scale
             maxAbsolute = max(maxAbsolute, absolute)
             maxRelative = max(maxRelative, relative)
-            if absolute > tolerance.absoluteVolts + tolerance.relative * max(abs(cpu[index]), abs(metal[index])) {
+            if absolute > tolerance.absoluteVolts + tolerance.relative * scale {
                 passed = false
             }
         }

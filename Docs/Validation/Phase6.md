@@ -1,113 +1,243 @@
-# Phase 6: neural-culture digital twin
+# Phase 6: bounded neural-culture digital twin
 
-## Status and scope
+## Status
 
-This increment is **partial implementation, uncompiled and scientifically unqualified**. It begins the Phase 6 neural-culture twin from the original roadmap. It does not certify completion of the roadmap's held-out biological prediction exit gate.
+Phase 6 is **source-complete and scientifically unqualified**.
 
-The starting repository revision was `d76f1c8237506aeb06b62496658784d04fd5ec34`. Implementation extends the actual `MEA.swift`, `DigitalTwinCalibration.swift`, `SequentialDigitalTwinAssimilation.swift`, and main CLI interfaces. It does not assume that earlier prose descriptions of nonexistent or unverified tools establish a working dependency.
+The source now contains the bounded neural-culture digital-twin architecture from the roadmap: solver-state current extraction, extracellular observation, acquisition electronics, spontaneous and evoked feature extraction, calibration, longitudinal assimilation, frozen held-out forecasts, leakage-safe baselines, grouped donor/batch evaluation, CPU/Metal observation-equivalence evidence, a checksum-gated public organoid corpus target, and a fail-closed file-backed qualification gate.
 
-No builds, Swift tests, shader compilation, scientific experiments, sidecar environments, or benchmarks were executed during this increment. Tests are committed source for the user to execute.
+Source completion is not the biological exit gate. No Phase 6 qualification certificate is valid until the exact external data, inference outputs, Apple GPU comparisons and held-out results have been materialized and verified.
 
-## Implemented path
+No build, Swift test, Metal compilation, GPU execution, DANDI materialization, PyNWB extraction or biological experiment was executed while authoring this source increment.
 
-```
-total transmembrane currents
+## Authoritative flow
+
+```text
+NumiTissue runtime state
+  -> discrete compartment charge balance
+  -> total outward transmembrane current
+  -> point / line source geometry
   -> finite-contact extracellular lead field
-  -> recorded SI voltages with explicit masks
-  -> frozen feature extraction
-  -> existing calibration / ensemble assimilation
-  -> immutable per-culture checkpoint
-  -> forecasts without held-out outcomes
-  -> per-feature error and predictive interval scores
+  -> acquisition electronics + artifact model
+  -> explicit valid-sample mask
+  -> spontaneous + evoked neural features
+  -> calibration / sequential assimilation
+  -> immutable culture checkpoint
+  -> frozen posterior forecast
+  -> preregistered baseline comparison
+  -> donor / batch / independent-culture evaluation
+  -> predictive interval calibration
+  -> CPU / Metal observation equivalence
+  -> file-backed Phase 6 qualification
 ```
 
-The first intended preparation remains a dissociated organoid-derived neural culture on a planar MEA. No calibrated biological preparation is bundled yet.
+## Runtime current authority
 
-## Source map
+`CultureRuntimeCurrentExtractor` derives net outward transmembrane current directly from `TissueRuntimeState` using compartment charge balance:
 
-| Path | Responsibility |
-| --- | --- |
-| `Sources/NumiTissueIntegration/CultureTwin/CultureLeadField.swift` | Point/line-source forward model, finite contacts, referencing, geometry identity |
-| `CultureRecording.swift` in the same directory | Uniform SI voltage records, explicit validity masks, existing MEA-frame and NWB-scale conversion |
-| `CultureFeatureExtractor.swift` | Negative peak detection, MAD noise, firing/burst rates, ISI variation and coactivity |
-| `CultureCalibrationAdapter.swift` | Recording-producing provider adapter for the existing calibrator |
-| `CultureStudyDesign.swift` | Feature/noise contracts, chronological and grouped holdout constraints |
-| `CultureLongitudinalTwin.swift` | Staged per-culture assimilation, no-outcome forecast callback, checkpoints |
-| `CultureHeldOutForecast.swift` | Bounded-concurrent frozen-posterior forecasts, independent external-culture initial state |
-| `CulturePredictiveScoring.swift` | Empirical-distribution CRPS and predictive intervals in declared feature units |
-| `Sources/NumiTissueMetal/MetalCultureLeadField.swift` | Bounded scientific32 projection into a caller-owned command buffer |
-| `Sources/NumiTissueMetal/Shaders/CultureLeadField.metal` | Source-major coefficient loads, fixed-order per-output accumulation |
-| `Sources/NumiTissue/CultureMetalBridge.swift` | CPU geometry to GPU observation-operator bridge |
-| `Sources/NumiTissueCLI/Phase6Command.swift` | JSON inspection, synthetic signal demo, feature extraction and scoring |
+```text
+I_mem,out = I_injected + I_axial,in - C dV/dt
+```
 
-## Electrical observation model
+The runtime convention is explicit. Axial and injected current are positive into a compartment; the observation source current is positive outward into extracellular space. The calculation uses the parent/child tree and child-owned axial conductance. Units are converted from nF, mV, ms and nA to amperes.
 
-`CultureCurrentSource` requires total outward transmembrane current in amperes. Include capacitive and ionic/synaptic membrane contributions with the simulator's declared sign convention. Membrane voltage, injected current, and current density are different quantities and cannot be substituted.
+Synaptic current is not independently added to the observation source because it is a membrane current represented through the compartment voltage/current balance. Adding it again would double count it. Any future solver that changes this state contract must change the current-extraction contract and its validation cases together.
 
-Geometry is in micrometers and is converted to meters in the forward calculation. Conductivity is S/m. Coefficients are ohms; multiplying by amperes produces volts.
+`CultureRuntimeSourceMap` binds each compartment to immutable point/line geometry derived from the neurite topology. Topology revision changes invalidate the cached source map and lead field.
 
-The homogeneous point-source coefficient is `1/(4*pi*sigma*r)`. The uniform-line source integrates this Green function along the segment. Distances are regularized at the source radius. This is an explicit near-source approximation, not a resolved membrane/electrolyte boundary solution. At large relative distance, the line expression uses a midpoint approximation to avoid subtractive cancellation.
+## Production simulation provider
 
-Disk contacts use deterministic equal-area quadrature. Square/rectangular contacts use a midpoint grid and require a square-number quadrature count. One point explicitly selects the midpoint approximation. Spherical contacts are rejected. The optional insulating plane uses a same-sign image source; it is not a full tissue/saline/glass three-layer solution. Sources and all quadrature points must be on or above the declared substrate.
+`CultureProductionSimulationProvider` is the production observation pipeline. A backend implements `CultureProductionRuntimeDriver` so it can preserve the backend-specific state that is not exposed as ordinary biological arrays, including delayed events, random streams and scheduler state.
 
-Reference subtraction is compiled into the lead field. A reference electrode must exist and be enabled. Common-average membership is explicit and fixed. Geometry/topology changes require a new operator and identity.
+The driver returns bounded electrical observation frames and a complete opaque continuation. The provider then:
 
-## Apple GPU path
+1. verifies the topology revision;
+2. reconstructs total transmembrane currents;
+3. applies the finite-contact lead field;
+4. applies the pinned measurement model;
+5. preserves the sample-validity mask;
+6. returns the recording plus complete continuation state.
 
-The observation matrix is transposed once into source-major FP32 coefficients so adjacent electrode lanes load adjacent coefficients. Current frames and voltages stay in caller-owned Metal buffers. The operator queries pipeline thread width; it does not hardcode an undocumented physical GPU tile or warp size.
+The provider does not permit held-out measured outcomes to enter the simulator callback. Backends are responsible for sampling at their electrical cadence; the host does not infer high-rate signals from sparse transaction snapshots.
 
-The encoder does not submit, block, read back, or mutate the tissue state. It requires tracked non-aliasing resources and retained-reference command buffers. Callers own inter-queue synchronization and must inspect output status after completion. Nonfinite input/output is flagged rather than accepted as valid observation data.
+## Extracellular forward model
 
-This is a separate observational kernel using the established Metal compute API, not integration into the Metal 4 transaction scheduler. It does not issue or bypass performance32 authorization. FP64 CPU lead-field results are an observation reference only; the tissue integrator is not renamed Reference64.
+`CultureLeadField` is a deterministic FP64 observation reference. It supports:
 
-## Features and observation uncertainty
+- point sources;
+- uniform line sources;
+- finite disk contacts;
+- square and rectangular contacts;
+- remote reference;
+- explicit reference electrode;
+- fixed common-average reference;
+- homogeneous conductivity;
+- an optional perfectly insulating planar substrate through an image source.
 
-Recordings are uniform, time-major volts. NWB-style conversion is `stored * conversion * channelConversion + offset`. Arbitrary irregular NWB time series require explicit preprocessing; the Swift conversion routine does not resample or open HDF5.
+Geometry is expressed in micrometers and converted to meters. Currents are amperes. Lead-field coefficients are ohms and outputs are volts.
 
-Blanking windows and incoming sample masks determine valid exposure. Detection uses negative local peaks with a configurable MAD threshold and refractory interval. ISIs and bursts crossing masked gaps are excluded. Missing/insufficient data are reported, not presented as zero biological activity. Active-electrode fraction is over observable electrodes, with observable fraction reported separately. Population coactivity requires fully observed complete bins across the configured array.
+The near-source radius is a declared regularization. The insulating-plane implementation is not a full saline/tissue/glass boundary solver. A multilayer or anisotropic conductor must enter as a separately validated observation model rather than silently changing this one.
 
-Burst/coactivity definitions are explicit analysis choices, not claims of universal neuroscience definitions. Filtering, stimulation-artifact removal and impedance calibration must be part of an externally pinned `measurementModelID`.
+## Electrode and amplifier model
 
-`CultureFeatureContract` keeps measurement, electrode and model-discrepancy standard deviations separate, combining their variances only at the current diagonal observation-covariance boundary. These terms are declared inputs, not automatically inferred biological constants. Full correlated observation covariance and hierarchical donor/batch random effects remain future work.
+`CultureMeasurementModel` keeps acquisition physics outside the biological state. Per-electrode interfaces contain series resistance, double-layer capacitance, charge-transfer resistance, amplifier input properties, gain, offset and saturation limits.
 
-## Calibration and held-out operation
+`CultureMeasurementProcessor` applies deterministic first-order electrode/acquisition filtering, common-mode subtraction, stimulation-artifact transients, blanking, gain and saturation. Its SHA-256 identity is part of the observation contract.
 
-`CultureCalibrationEvaluator` feeds simulated recording features into the existing `DigitalTwinCalibrator`. Its provider must create an independent candidate simulation. Fixed per-feature scales prevent the provider from lowering the existing objective merely by increasing reported prediction uncertainty.
+This is a bounded equivalent-circuit model. It is not claimed to reproduce a particular commercial MEA system until its parameters are fitted to that system and validated against phantom or saline recordings.
 
-`CultureLongitudinalTwin` reuses `SequentialTissueTwinAssimilator` in a staged wrapper. Failed, rejected or cancelled updates leave the wrapper's committed checkpoint unchanged. The forward provider receives only identity, stimulus/time schedule and required feature names, never measured values or covariance. It must have no external side effects. This API separation cannot prevent a malicious provider from reading unrelated files; it is not a process sandbox.
+## Neural features
 
-Only calibration sessions may update state. Validation is separate from calibration. Temporal holdouts occur strictly after same-culture fitting. Held-out waveforms and electrodes cannot overlap fitting/validation exposure. Independent-culture holdouts cannot share a culture, donor or batch with fitting/validation. Missing holdout categories are reported; a valid study schema is not a complete scientific study.
+The spontaneous feature path provides masked spike detection, firing and burst rates, interspike-interval statistics, active-electrode fraction, observable-electrode fraction and population coactivity.
 
-Forecasts require a complete scheduled calibration checkpoint. Same-culture forecasts continue the corresponding opaque simulator state without updating parameters. External-culture prediction transfers parameters but requires a different, explicitly supplied initial simulator state. The transfer is not evidence that the new culture has been individually calibrated.
+The evoked path adds:
 
-## Scoring
+- per-electrode response amplitude;
+- per-electrode response latency;
+- responsive-electrode fraction;
+- propagation-time span;
+- declared spectral-band power.
 
-For equally weighted samples `x_i`, the scorer evaluates the exact empirical-distribution CRPS:
+Masked or blanked samples are excluded. Missing data are reported as unavailable rather than converted to zero neural activity.
 
-`mean(abs(x_i - y)) - 0.5 * mean(abs(x_i - x_j))`.
+The direct DFT used by the correctness path is intentionally simple. A faster FFT implementation may replace it only after an equivalence case demonstrates the same declared features.
 
-The sorted implementation is O(N log N). Scores are normalized only by predeclared feature scales. Median absolute error and 50/80/90/95 percent predictive intervals are also reported. Measurement noise must be included by the prediction-generating model when needed; scoring does not silently add it again.
+## Calibration and longitudinal assimilation
 
-A single session's interval coverage is descriptive. It does not establish calibrated uncertainty, independent replication, posterior identifiability or outperformance over baselines. This increment does not issue a biological-validation certificate from these scores.
+`CultureCalibrationEvaluator` reuses the existing NumiTissue calibration machinery using fixed feature scales. A candidate cannot improve its objective by merely inflating its own reported uncertainty.
 
-## Remaining Phase 6 work
+`CultureLongitudinalTwin` wraps the sequential ensemble assimilator transactionally. It stages each assimilation in a fresh assimilator and adopts the checkpoint only after acceptance and cancellation checks. Failed or rejected updates leave the committed checkpoint unchanged.
 
-1. Concrete production `CultureSimulationProvider` wiring: solver transmembrane-current extraction, complete checkpoint continuation, virtual electrode filtering, and source/topology mappings.
-2. Frequency-dependent electrode impedance, amplifier/reference circuitry, stimulation artifacts, and a validated multilayer conductor.
-3. Evoked-response features, propagation, spectral metrics and quality-control comparisons against public recordings.
-4. Hierarchical donor/batch inference, structural discrepancy fitting, baseline forecasts and grouped uncertainty for held-out comparisons.
-5. A pinned neural-culture dataset processed through the Phase 4 NWB workflow, synthetic parameter-recovery experiments, and independent held-out stimulation/culture results.
-6. Actual Swift compilation, CPU/Metal observation comparisons, failure/cancellation tests and Apple Silicon profiling.
+Only calibration sessions may mutate the twin. Validation and all holdout partitions remain observational.
 
-Do not mark the original Phase 6 exit gate passed until the bounded twin predicts held-out biological responses with calibrated uncertainty and independently reproduced evidence.
+## Held-out design
 
-## Primary references
+`CultureStudyDesign` separates:
 
-- LFPykit forward-model documentation: https://lfpykit.readthedocs.io/en/latest/
-- LFPykit line-source equation and current/voltage units: https://lfpykit.readthedocs.io/en/v0.5.1/
-- NWB ElectricalSeries conversion and timing: https://matnwb.readthedocs.io/en/latest/pages/neurodata_types/core/ElectricalSeries.html
-- Apple compute encoder contract: https://developer.apple.com/documentation/metal/mtlcomputecommandencoder/
-- Apple nonuniform-grid dispatch requirements: https://developer.apple.com/documentation/metal/mtlcomputecommandencoder/dispatchthreads(_:threadsperthreadgroup:)
-- Bracher et al., probabilistic interval forecast evaluation: https://arxiv.org/abs/2005.12881
+- calibration;
+- validation;
+- later temporal holdout;
+- unseen waveform holdout;
+- unseen stimulation-electrode holdout;
+- independent-culture holdout.
 
-References guide methods and interoperability; no equivalence to their implementations is claimed without executed comparisons.
+Independent-culture holdouts may not share culture, donor or batch with fitting/validation data. Same-culture temporal holdouts must occur strictly after fitting.
+
+`CultureHeldOutForecaster` freezes posterior parameters. Same-culture forecasts continue the committed simulator state. Independent-culture forecasts transfer only the parameter posterior and require a separate initial simulator state.
+
+## Baselines and grouped evaluation
+
+`CultureBaselineForecaster` supplies reproducible baselines without accessing held-out or future observations:
+
+- persistence;
+- historical mean;
+- stimulus-matched historical mean;
+- same-culture linear trend.
+
+Independent-culture baselines reject training observations sharing the held-out culture, donor or batch.
+
+`CultureHierarchicalEvaluator` scores held-out sessions with fixed feature scales and reports results by culture, donor and batch. Required baselines must be present for every evaluated session. Phase 6 cannot pass if the candidate misses the preregistered relative-improvement threshold for any required comparison.
+
+This grouped evaluator is not itself a hierarchical Bayesian random-effects model. Donor/batch uncertainty can be fitted by the Phase 5 inference layer; the Phase 6 gate requires that biological grouping remain explicit and that independent evidence not be collapsed into pseudo-replicates.
+
+## Apple GPU observation path
+
+`MetalCultureLeadField` performs the bounded `scientific32` current-to-electrode projection while keeping current and voltage buffers GPU-resident. It does not submit command buffers, block the host or grant `performance32` authority.
+
+`CultureObservationEquivalence` compares Metal results against the FP64 observation reference with explicit absolute and relative voltage tolerances. Device identity, lead-field identity and current-vector identity are part of the report.
+
+The Phase 6 certificate requires a passing CPU/Metal observation report and the same scientific conclusion from the CPU and Metal evaluation paths.
+
+## Public organoid-data target
+
+`NumiTissuePhase6CultureCorpus` connects Phase 6 to DANDI dandiset `001268`, associated with the published feedback-driven brain-organoid platform study (`10.1016/j.iot.2025.101671`).
+
+The repository deliberately does not hardcode an unverified mutable asset. To create a publishable corpus entry, the caller must provide:
+
+- an exact published DANDI version;
+- an exact NWB asset path;
+- a resolved license;
+- the byte count;
+- the SHA-256 digest.
+
+`draft` and `latest` are rejected. The resulting entry uses the existing Phase 4 PyNWB sidecar and scientific-corpus contracts. It remains a candidate until the exact bytes have been materialized and terminal evidence generated.
+
+## Qualification
+
+`CultureTwinQualificationEvidence` requires all of the following:
+
+- Phase 4 corpus evidence;
+- Phase 5 inference evidence;
+- synthetic parameter recovery with identifiable parameters;
+- calibrated predictive intervals;
+- required-baseline outperformance;
+- held-out waveform evidence;
+- held-out electrode evidence;
+- independent-culture evidence;
+- independent-donor evidence;
+- CPU/Metal observation equivalence;
+- reproducible scientific conclusions across CPU and Metal.
+
+Digest-only certification is disabled. `CultureTwinQualifier.qualify` intentionally refuses to issue a certificate.
+
+Production certification requires:
+
+```text
+CultureQualificationAuthorityManifest
+    -> secure path resolution
+    -> no symlink traversal
+    -> bounded file hashing
+    -> exact byte count
+    -> exact SHA-256
+    -> complete required-role coverage
+    -> CultureQualificationAuthorityVerification
+    -> CultureTwinQualifier.qualifyVerified
+```
+
+The certificate binds both the qualification evidence and the file-backed authority manifest.
+
+## CLI
+
+```text
+numitissue phase6 status
+numitissue phase6 demo-recording
+numitissue phase6 demo-config
+numitissue phase6 features <recording.json> <configuration.json>
+numitissue phase6 evoked <recording.json> <stimulus.json> <configuration.json>
+numitissue phase6 lead-field <geometry-request.json>
+numitissue phase6 study-validate <study.json>
+numitissue phase6 score <score-request.json>
+numitissue phase6 baseline <baseline-request.json>
+numitissue phase6 hierarchical-score <request.json>
+numitissue phase6 qualify <qualification-evidence.json> <authority-manifest.json> <artifact-root>
+```
+
+The qualification command re-hashes authority files before issuing a certificate. No Phase 6 CLI command controls wetware or grants Metal `performance32` authorization.
+
+## Source audit
+
+`Tools/phase6/source_audit.py` checks that the required Phase 6 source authorities exist, that the DANDI target rejects mutable aliases, that the digest-only qualifier remains fail-closed and that no unresolved Phase 6 conflict/TODO markers remain.
+
+Run on the target development machine together with the repository build and validation suite:
+
+```bash
+python3 Tools/phase6/source_audit.py
+swift build
+swift test --filter Culture
+swift run numitissue phase6 status
+```
+
+On Apple Silicon, also run the Phase 3 qualification path and produce the Phase 6 CPU/Metal observation-equivalence evidence.
+
+## Exit gate
+
+Phase 6 is scientifically complete only when a `CultureTwinQualificationCertificate` is produced from real materialized evidence and independently reproducible held-out results.
+
+Until then the correct repository state is:
+
+```text
+SOURCE COMPLETE
+SCIENTIFICALLY UNQUALIFIED
+```
+
+The source tree alone must never be cited as evidence that NumiTissue predicts living neural tissue.

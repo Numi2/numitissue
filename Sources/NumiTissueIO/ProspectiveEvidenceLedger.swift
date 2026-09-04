@@ -10,7 +10,6 @@ public enum ProspectiveEvidenceEventKind: String, Sendable, Hashable, Codable, C
     case unblinded
     case immutabilityVerified = "immutability-verified"
     case scoreSealed = "score-sealed"
-    case claimIssued = "claim-issued"
     case evidenceClosed = "evidence-closed"
 }
 
@@ -230,10 +229,6 @@ public struct ProspectiveEvidenceLedger: Sendable, Hashable, Codable {
             }
         case .scoreSealed:
             guard seen.contains(.immutabilityVerified), !seen.contains(kind) else {
-                throw ProspectiveEvidenceError.invalidEventOrder(kind)
-            }
-        case .claimIssued:
-            guard seen.contains(.scoreSealed), !seen.contains(kind) else {
                 throw ProspectiveEvidenceError.invalidEventOrder(kind)
             }
         case .evidenceClosed:

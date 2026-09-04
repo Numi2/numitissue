@@ -164,12 +164,24 @@ public struct ProspectiveObservationBundle: Sendable, Hashable, Codable {
             }
             let replicateIDsByBlind = Dictionary(grouping: series, by: \.blindedID)
                 .mapValues { Set($0.map(\.replicateID)) }
+            var expectedSeriesKeys = Set<String>()
             for commitment in protocolValue.blindingCommitments {
-                guard replicateIDsByBlind[commitment.blindedID]?.count == commitment.replicateCount else {
+                guard let replicateIDs = replicateIDsByBlind[commitment.blindedID],
+                      replicateIDs.count == commitment.replicateCount else {
                     throw ProspectivePredictionError.observationReplicateMismatch(
                         commitment.blindedID
                     )
                 }
+                for replicateID in replicateIDs {
+                    for targetID in targets.keys {
+                        expectedSeriesKeys.insert(
+                            "\(commitment.blindedID)::\(targetID)::\(replicateID)"
+                        )
+                    }
+                }
+            }
+            guard Set(keys) == expectedSeriesKeys else {
+                throw ProspectivePredictionError.incompleteObservationBundle
             }
         }
         return self

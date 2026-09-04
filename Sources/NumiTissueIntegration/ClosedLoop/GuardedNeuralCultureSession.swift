@@ -7,6 +7,7 @@ public protocol NonphysicalNeuralCultureBackend: NeuralCultureBackend {}
 public protocol WatchdogNeuralCultureBackend: InterlockedNeuralCultureBackend {
     /// Refresh an already operator-armed DEVICE-local watchdog. Must not rearm a stopped device.
     /// Device stop must atomically reject later submissions, including requests already in flight.
+    /// Implementations must reject past start timestamps on the device, not execute them immediately.
     func refreshWatchdog(session: NeuralCultureSession) async throws -> ClosedLoopInterlockState
 }
 
@@ -238,11 +239,14 @@ public actor GuardedNeuralCultureSession {
     private func checkReceipt(_ r: NeuralStimulationReceipt, request: NeuralStimulationRequest,
                               earliestAcceptance: UInt64) throws {
         guard r.requestID == request.id, r.acceptedAtNanoseconds >= earliestAcceptance,
+              r.acceptedAtNanoseconds <= request.scheduledTimeNanoseconds,
               r.acceptedAtNanoseconds <= (request.deadlineNanoseconds ?? 0) else {
             throw ClosedLoopError.ambiguousDelivery(request.id)
         }
         if r.status == .executed {
-            guard let at = r.executedAtNanoseconds, at >= request.scheduledTimeNanoseconds,
+            // Exact device-grid scheduling is this interface's contract. A late or early delivered
+            // pulse is a failed execution, even when still inside the broader plan-end deadline.
+            guard let at = r.executedAtNanoseconds, at == request.scheduledTimeNanoseconds,
                   at <= (request.deadlineNanoseconds ?? 0) else { throw ClosedLoopError.ambiguousDelivery(request.id) }
         }
     }

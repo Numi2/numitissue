@@ -10,10 +10,15 @@ struct Phase6Command {
         case "help", "--help", "-h": help()
         case "status":
             guard tail.isEmpty else { throw CommandError.usage }
-            try emit(["phase": "6", "scope": "neural-culture observation and held-out prediction",
-                "implementation": "partial-uncompiled", "scientificQualification": "not-established",
-                "simulationProvider": "required-user-supplied-isolated-provider",
-                "metalObserver": "scientific32-source-only-not-performance32-authority"])
+            try emit([
+                "phase": "6",
+                "scope": "bounded neural-culture digital twin",
+                "implementation": "source-complete-unqualified",
+                "scientificQualification": "requires-materialized-evidence",
+                "simulationProvider": "production-driver-plus-current-leadfield-electronics-pipeline",
+                "metalObserver": "scientific32-source-present-requires-apple-qualification",
+                "exitGate": "synthetic-recovery+calibration+baselines+heldouts+independent-culture+cpu-metal"
+            ])
         case "demo-recording":
             guard tail.isEmpty else { throw CommandError.usage }
             try emit(demoRecording())
@@ -25,6 +30,14 @@ struct Phase6Command {
             let recording: CultureRecording = try read(tail[0])
             let configuration: CultureFeatureConfiguration = try read(tail[1])
             try emit(CultureFeatureExtractor.extract(recording, configuration: configuration))
+        case "evoked":
+            guard tail.count == 3 else { throw CommandError.usage }
+            let recording: CultureRecording = try read(tail[0])
+            let stimulus: CultureStimulusEpoch = try read(tail[1])
+            let configuration: CultureEvokedFeatureConfiguration = try read(tail[2])
+            try emit(CultureEvokedFeatureExtractor.extract(
+                recording: recording, stimulus: stimulus, configuration: configuration
+            ))
         case "lead-field":
             guard tail.count == 1 else { throw CommandError.usage }
             let request: LeadFieldRequest = try read(tail[0])
@@ -44,6 +57,21 @@ struct Phase6Command {
             try emit(CulturePredictiveScorer.score(forecast: request.forecast, observations: request.observations,
                 design: request.design, expectedModelSHA256: request.expectedModelSHA256,
                 expectedPosteriorSHA256: request.expectedPosteriorSHA256))
+        case "hierarchical-score":
+            guard tail.count == 1 else { throw CommandError.usage }
+            let request: HierarchicalScoreRequest = try read(tail[0])
+            try emit(CultureHierarchicalEvaluator.evaluate(
+                forecasts: request.forecasts,
+                observations: request.observations,
+                baselines: request.baselines,
+                requiredBaselineIDs: Set(request.requiredBaselineIDs),
+                featureScales: request.featureScales,
+                minimumRelativeImprovement: request.minimumRelativeImprovement
+            ))
+        case "qualify":
+            guard tail.count == 1 else { throw CommandError.usage }
+            let evidence: CultureTwinQualificationEvidence = try read(tail[0])
+            try emit(CultureTwinQualifier.qualify(evidence, issuedAt: Date()))
         default: throw CommandError.usage
         }
     }
@@ -85,12 +113,15 @@ struct Phase6Command {
         numitissue phase6 demo-recording
         numitissue phase6 demo-config
         numitissue phase6 features <recording.json> <configuration.json>
+        numitissue phase6 evoked <recording.json> <stimulus.json> <configuration.json>
         numitissue phase6 lead-field <geometry-request.json>
         numitissue phase6 study-validate <study.json>
         numitissue phase6 score <score-request.json>
+        numitissue phase6 hierarchical-score <request.json>
+        numitissue phase6 qualify <qualification-evidence.json>
 
-        Output is JSON. The demo is synthetic, not laboratory data or a biological validation.
-        No command runs a wetware system, installs dependencies, or authorizes performance32.
+        Output is JSON. Qualification is fail-closed and requires materialized evidence.
+        No command runs wetware, installs dependencies, or authorizes performance32.
         """)
     }
     private struct LeadFieldRequest: Decodable {
@@ -112,6 +143,14 @@ struct Phase6Command {
         var observations: CultureFeatureReport
         var expectedModelSHA256: ScientificSHA256Digest
         var expectedPosteriorSHA256: ScientificSHA256Digest
+    }
+    private struct HierarchicalScoreRequest: Decodable {
+        var forecasts: [CultureHeldOutForecast]
+        var observations: [CultureHeldOutObservation]
+        var baselines: [CultureBaselineForecast]
+        var requiredBaselineIDs: [String]
+        var featureScales: [String: Double]
+        var minimumRelativeImprovement: Double
     }
     private enum CommandError: Error, CustomStringConvertible {
         case usage, inputTooLarge

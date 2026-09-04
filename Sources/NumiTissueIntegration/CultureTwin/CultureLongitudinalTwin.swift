@@ -1,7 +1,7 @@
 import Foundation
 import NumiTissueIO
 
-/// Contains the stimulus and time schedule but no measured outcomes or observation covariance.
+/// Stimulus/time schedule only: no measured outcomes or observation covariance.
 public struct CultureForecastRequest: Sendable {
     public let session: CultureStudySession
     public let featureIDs: [String]
@@ -10,7 +10,7 @@ public struct CultureForecastRequest: Sendable {
 
 public struct CultureSimulationResult: Sendable {
     public var recording: CultureRecording
-    /// Complete independent simulator continuation state, including pending events and RNG state.
+    /// Complete independent simulator continuation, including pending events and RNG state.
     public var nextOpaqueState: Data
     public init(recording: CultureRecording, nextOpaqueState: Data) {
         self.recording = recording; self.nextOpaqueState = nextOpaqueState
@@ -33,8 +33,8 @@ public struct CultureTwinCheckpoint: Sendable, Codable {
     }
 }
 
-/// One actor per culture. It stages a fresh assimilator and adopts its state only on acceptance.
-/// Provider calls must be side-effect-free; no wetware or robot command is permitted here.
+/// One actor per culture. Stage a fresh assimilator; adopt only after acceptance and cancellation checks.
+/// Providers must be side-effect-free: no wetware or robot command is permitted here.
 public actor CultureLongitudinalTwin {
     private let design: CultureStudyDesign
     private let cultureID: String
@@ -51,7 +51,9 @@ public actor CultureLongitudinalTwin {
                 parameters: [TissueTwinParameterDefinition], configuration: TissueTwinAssimilationConfiguration,
                 initialState: Data? = nil, provider: @escaping CultureSimulationProvider) throws {
         self.design = try design.validated()
-        guard !parameters.isEmpty, Set(parameters.map(\.name)).count == parameters.count,
+        guard !parameters.isEmpty, parameters.count <= 1024,
+              Set(parameters.map(\.name)).count == parameters.count,
+              configuration.ensembleSize <= 4096, configuration.maximumConcurrentForecasts <= 64,
               design.sessions.contains(where: { $0.cultureID == cultureID && $0.partition == .calibration }) else {
             throw CultureTwinError.invalid("culture calibration or parameter definitions")
         }
@@ -93,7 +95,7 @@ public actor CultureLongitudinalTwin {
                                              measurementModelID: design.measurementModelID)
         let provider = self.provider
         let featureConfiguration = design.featureConfiguration
-        // Crucially, the fourth argument supplied by the legacy assimilator is never forwarded.
+        // Never forward the fourth argument (observed values) received from the legacy assimilator.
         let forward: TissueTwinForwardModel = { member, parameters, state, _ in
             let result = try await provider(member, parameters, state, request)
             guard !result.nextOpaqueState.isEmpty,
@@ -120,9 +122,9 @@ public actor CultureLongitudinalTwin {
             metadata: ["culture": cultureID, "session": sessionID, "source-sha256": measured.sourceSHA256.hexadecimal])
         let report = try await staged.assimilate(observation)
         guard report.accepted else { return report }
-        try Task.checkCancellation()
         let next = await staged.checkpoint()
-        // No suspension between adoption and recording the accepted session.
+        try Task.checkCancellation()
+        // No suspension between cancellation check, adoption and recording the accepted session.
         committed = next; sessionIDs.append(sessionID)
         return report
     }
@@ -133,7 +135,6 @@ public actor CultureLongitudinalTwin {
             modelSHA256: modelSHA256, assimilatedSessionIDs: sessionIDs, ensemble: committed)
     }
 
-    /// Restore only to a fresh, quiescent actor. Full solver member validation occurs on construction.
     public func restore(_ source: CultureTwinCheckpoint) throws {
         guard !busy, committed == nil, source.schemaVersion == 1,
               source.studySHA256 == (try design.digest()), source.cultureID == cultureID,
@@ -143,7 +144,7 @@ public actor CultureLongitudinalTwin {
         }
         let expected = design.sessions.filter { $0.cultureID == cultureID && $0.partition == .calibration }
             .sorted { ($0.simulationTick, $0.id) < ($1.simulationTick, $1.id) }
-        guard !source.assimilatedSessionIDs.isEmpty,
+        guard !source.assimilatedSessionIDs.isEmpty, source.assimilatedSessionIDs.count <= expected.count,
               source.assimilatedSessionIDs == Array(expected.prefix(source.assimilatedSessionIDs.count).map(\.id)),
               source.ensemble.lastTick == expected[source.assimilatedSessionIDs.count - 1].simulationTick else {
             throw CultureTwinError.invalid("culture checkpoint session sequence")

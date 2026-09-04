@@ -23,6 +23,7 @@ struct NumiTissueCLIEntryPoint {
         case "phase2": try Phase2Command.run(Array(arguments.dropFirst()))
         case "phase3": try Phase3Command.run(Array(arguments.dropFirst()))
         case "phase4": try Phase4Command.run(Array(arguments.dropFirst()))
+        case "phase6": try Phase6Command.run(Array(arguments.dropFirst()))
         case "validate-experiment", "campaign", "screening", "organoid", "wetware":
             try NumiTissueCommandLine.run(arguments: arguments)
         default: throw CLIError.unknownCommand(command)
@@ -134,6 +135,12 @@ struct NumiTissueCLIEntryPoint {
           numitissue phase4 corpus <built-in|candidates|validate|verify|seal> ...
           numitissue phase4 sidecar <pins|request-digest|verify-response> ...
           numitissue phase4 file sha256 <path>
+
+          numitissue phase6 help
+          numitissue phase6 status
+          numitissue phase6 features <recording.json> <configuration.json>
+          numitissue phase6 study-validate <study.json>
+          numitissue phase6 score <score-request.json>
 
         Commands are deterministic and write machine-readable JSON except help/version.
         The Swift API exposes reference and Metal execution backends, transactional suite coupling,

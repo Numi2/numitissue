@@ -1,7 +1,7 @@
 import Foundation
 import NumiTissueIO
 
-/// An explicit negative-peak / MAD detector and maximum-ISI burst definition.
+/// Explicit negative-peak / MAD detection and maximum-ISI burst definition.
 /// No filtering is implicit; record preprocessing identity in measurementModelID.
 public struct CultureFeatureConfiguration: Sendable, Codable {
     public var thresholdSigma: Double
@@ -55,7 +55,7 @@ public enum CultureFeatureExtractor {
             throw CultureTwinError.invalid("population bin outside recording resolution or duration")
         }
         let binSamples = Int(binSamplesDouble)
-        let binCount = count / binSamples // Ignore incomplete final bin rather than distort its exposure.
+        let binCount = count / binSamples
         var valid = recording.validSamples ?? [Bool](repeating: true, count: recording.volts.count)
         for interval in config.blankingIntervals {
             let lower = max(0, min(Double(count), ceil((interval.startSeconds - recording.startSeconds) * recording.sampleRateHertz)))
@@ -72,8 +72,8 @@ public enum CultureFeatureExtractor {
         var unavailable = [String: String]()
         var allSpikes = [CultureDetectedSpike]()
         var activeElectrodes = 0
+        var observableElectrodes = 0
         func time(_ index: Int) -> Double { recording.startSeconds + Double(index) / recording.sampleRateHertz }
-
         for channel in 0..<channels {
             let id = recording.electrodeIDs[channel]
             let prefix = "electrode.\(id.rawValue)"
@@ -92,10 +92,10 @@ public enum CultureFeatureExtractor {
             }
             guard exposureSamples > 0, baseline.count >= config.minimumNoiseSamples else {
                 unavailable[prefix] = "Insufficient valid exposure or baseline samples."
-                // Network coactivity cannot treat an unobservable channel as silent.
                 availableBins = [Bool](repeating: false, count: binCount)
                 continue
             }
+            observableElectrodes += 1
             let center = median(baseline)
             let mad = median(baseline.map { abs($0 - center) })
             let sigma = max(mad / 0.6744897501960817, config.noiseFloorVolts)
@@ -125,7 +125,6 @@ public enum CultureFeatureExtractor {
             features.append(.init(id: prefix + ".noise_sigma", unit: "V", value: sigma, supportCount: baseline.count))
             features.append(.init(id: prefix + ".voltage_rms", unit: "V", value: sqrt(sumSquares / Double(exposureSamples)), supportCount: exposureSamples))
             features.append(.init(id: prefix + ".valid_fraction", unit: "1", value: Double(exposureSamples) / Double(count), supportCount: count))
-            // Exclude ISIs crossing masked intervals. Their true intervening spike count is unknown.
             var isi = [Double]()
             for pair in zip(spikes, spikes.dropFirst()) {
                 let uninterrupted = (pair.0.sampleIndex...pair.1.sampleIndex).allSatisfy { valid[$0 * channels + channel] }
@@ -153,7 +152,10 @@ public enum CultureFeatureExtractor {
             let coactive = usableBins.filter { Double(activeChannelsPerBin[$0]) / Double(channels) >= config.coactiveFraction }.count
             features.append(.init(id: "network.coactive_bin_fraction", unit: "1", value: Double(coactive) / Double(usableBins.count), supportCount: usableBins.count))
         } else { unavailable["network.coactive_bin_fraction"] = "No fully observed population bins." }
-        features.append(.init(id: "network.active_electrode_fraction", unit: "1", value: Double(activeElectrodes) / Double(channels), supportCount: channels))
+        features.append(.init(id: "network.observable_electrode_fraction", unit: "1", value: Double(observableElectrodes) / Double(channels), supportCount: channels))
+        if observableElectrodes > 0 {
+            features.append(.init(id: "network.active_electrode_fraction", unit: "1", value: Double(activeElectrodes) / Double(observableElectrodes), supportCount: observableElectrodes))
+        } else { unavailable["network.active_electrode_fraction"] = "No observable electrodes; not a silent network." }
         guard features.allSatisfy({ $0.value.isFinite }) else { throw CultureTwinError.invalid("feature overflow") }
         return CultureFeatureReport(recordingID: recording.recordingID, sourceSHA256: recording.sourceSHA256,
             extractionSHA256: ScientificSHA256Digest(data: try ScientificCanonicalJSON.encode(config)),

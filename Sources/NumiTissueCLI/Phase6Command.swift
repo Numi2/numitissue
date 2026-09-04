@@ -14,10 +14,10 @@ struct Phase6Command {
                 "phase": "6",
                 "scope": "bounded neural-culture digital twin",
                 "implementation": "source-complete-unqualified",
-                "scientificQualification": "requires-materialized-evidence",
+                "scientificQualification": "requires-materialized-file-backed-evidence",
                 "simulationProvider": "production-driver-plus-current-leadfield-electronics-pipeline",
                 "metalObserver": "scientific32-source-present-requires-apple-qualification",
-                "exitGate": "synthetic-recovery+calibration+baselines+heldouts+independent-culture+cpu-metal"
+                "exitGate": "synthetic-recovery+calibration+baselines+heldouts+independent-culture+cpu-metal+file-authority"
             ])
         case "demo-recording":
             guard tail.isEmpty else { throw CommandError.usage }
@@ -57,6 +57,10 @@ struct Phase6Command {
             try emit(CulturePredictiveScorer.score(forecast: request.forecast, observations: request.observations,
                 design: request.design, expectedModelSHA256: request.expectedModelSHA256,
                 expectedPosteriorSHA256: request.expectedPosteriorSHA256))
+        case "baseline":
+            guard tail.count == 1 else { throw CommandError.usage }
+            let request: BaselineRequestFile = try read(tail[0])
+            try emit(CultureBaselineForecaster.forecast(request: request.request, training: request.training))
         case "hierarchical-score":
             guard tail.count == 1 else { throw CommandError.usage }
             let request: HierarchicalScoreRequest = try read(tail[0])
@@ -69,9 +73,17 @@ struct Phase6Command {
                 minimumRelativeImprovement: request.minimumRelativeImprovement
             ))
         case "qualify":
-            guard tail.count == 1 else { throw CommandError.usage }
+            guard tail.count == 3 else { throw CommandError.usage }
             let evidence: CultureTwinQualificationEvidence = try read(tail[0])
-            try emit(CultureTwinQualifier.qualify(evidence, issuedAt: Date()))
+            let manifest: CultureQualificationAuthorityManifest = try read(tail[1])
+            let root = URL(fileURLWithPath: tail[2], isDirectory: true)
+            let checkedAt = Date()
+            let verification = try CultureQualificationAuthorityVerifier.verify(
+                manifest: manifest, evidence: evidence, rootURL: root, checkedAt: checkedAt
+            )
+            try emit(CultureTwinQualifier.qualifyVerified(
+                evidence, manifest: manifest, verification: verification, issuedAt: checkedAt
+            ))
         default: throw CommandError.usage
         }
     }
@@ -117,10 +129,11 @@ struct Phase6Command {
         numitissue phase6 lead-field <geometry-request.json>
         numitissue phase6 study-validate <study.json>
         numitissue phase6 score <score-request.json>
+        numitissue phase6 baseline <baseline-request.json>
         numitissue phase6 hierarchical-score <request.json>
-        numitissue phase6 qualify <qualification-evidence.json>
+        numitissue phase6 qualify <qualification-evidence.json> <authority-manifest.json> <artifact-root>
 
-        Output is JSON. Qualification is fail-closed and requires materialized evidence.
+        Output is JSON. Qualification re-hashes every required authority artifact from disk.
         No command runs wetware, installs dependencies, or authorizes performance32.
         """)
     }
@@ -143,6 +156,10 @@ struct Phase6Command {
         var observations: CultureFeatureReport
         var expectedModelSHA256: ScientificSHA256Digest
         var expectedPosteriorSHA256: ScientificSHA256Digest
+    }
+    private struct BaselineRequestFile: Decodable {
+        var request: CultureBaselineRequest
+        var training: [CultureBaselineTrainingSession]
     }
     private struct HierarchicalScoreRequest: Decodable {
         var forecasts: [CultureHeldOutForecast]

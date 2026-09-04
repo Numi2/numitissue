@@ -23,6 +23,7 @@ extension ProspectivePredictionScorer {
         observation: ProspectiveObservationSeries,
         target: ProspectivePredictionTarget,
         rule: ProspectiveScoringRule,
+        recordCoverage: Bool,
         coverage: inout CoverageAccumulator
     ) throws -> SeriesScoreResult {
         var pointScores: [Double] = []
@@ -75,10 +76,12 @@ extension ProspectivePredictionScorer {
                  .absoluteEndpointError:
                 break
             }
-            coverage.add(
-                quantiles: transformedQuantiles,
-                observation: transformedObservation
-            )
+            if recordCoverage {
+                coverage.add(
+                    quantiles: transformedQuantiles,
+                    observation: transformedObservation
+                )
+            }
         }
         guard validCount > 0,
               matchedCount > 0 else {
@@ -122,6 +125,7 @@ extension ProspectivePredictionScorer {
             observation: observation,
             target: target,
             rule: rule,
+            recordCoverage: false,
             coverage: &ignored
         )
     }
@@ -183,14 +187,24 @@ extension ProspectivePredictionScorer {
         quantiles: [ProspectiveQuantile],
         observation: Double
     ) -> Double {
-        let total = quantiles.reduce(0.0) { partial, quantile in
+        guard quantiles.count > 1,
+              let first = quantiles.first,
+              let last = quantiles.last,
+              last.probability > first.probability else {
+            return .infinity
+        }
+        func pinball(_ quantile: ProspectiveQuantile) -> Double {
             let residual = observation - quantile.value
-            let pinball = residual >= 0
+            return residual >= 0
                 ? quantile.probability * residual
                 : (quantile.probability - 1) * residual
-            return partial + pinball
         }
-        return 2 * total / Double(quantiles.count)
+        var integral = 0.0
+        for (lower, upper) in zip(quantiles, quantiles.dropFirst()) {
+            let width = upper.probability - lower.probability
+            integral += 0.5 * width * (pinball(lower) + pinball(upper))
+        }
+        return 2 * integral / (last.probability - first.probability)
     }
 
     static func weightedIntervalScore(
@@ -200,7 +214,6 @@ extension ProspectivePredictionScorer {
         let median = try quantileValue(quantiles, probability: 0.5)
         let lower = quantiles.filter { $0.probability < 0.5 }
         var weightedTotal = 0.5 * abs(observation - median)
-        var normalization = 0.5
         var intervals = 0
         for lowerQuantile in lower {
             let upperProbability = 1 - lowerQuantile.probability
@@ -217,14 +230,12 @@ extension ProspectivePredictionScorer {
             }
             let weight = alpha / 2
             weightedTotal += weight * intervalScore
-            normalization += weight
             intervals += 1
         }
-        guard intervals > 0,
-              normalization > 0 else {
+        guard intervals > 0 else {
             throw ProspectiveScoringError.missingCentralIntervals
         }
-        return weightedTotal / normalization
+        return weightedTotal / (Double(intervals) + 0.5)
     }
 
     static func quantileValue(

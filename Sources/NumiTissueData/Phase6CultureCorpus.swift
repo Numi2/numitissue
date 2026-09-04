@@ -37,7 +37,7 @@ public struct Phase6DANDIAssetPin: Sendable, Hashable, Codable {
 
 public enum NumiTissuePhase6CultureCorpus {
     public static let feedbackOrganoidDandiset = "001268"
-    public static let feedbackOrganoidPaperDOI = "10.1016/j.crmeth.2025.101185"
+    public static let feedbackOrganoidPaperDOI = "10.1016/j.iot.2025.101671"
 
     /// Produces a publishable Phase 4 corpus entry only after the caller supplies an exact
     /// published DANDI version, NWB asset path, byte count, SHA-256 and resolved license.

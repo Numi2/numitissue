@@ -144,32 +144,59 @@ public struct CultureTwinQualificationEvidence: Sendable, Codable {
 public struct CultureTwinQualificationCertificate: Sendable, Codable {
     public var schemaVersion: UInt32
     public var evidenceSHA256: ScientificSHA256Digest
+    public var authorityManifestSHA256: ScientificSHA256Digest
     public var modelSHA256: ScientificSHA256Digest
     public var studySHA256: ScientificSHA256Digest
     public var issuedAt: Date
     public var claim: String
 
-    public init(evidenceSHA256: ScientificSHA256Digest, modelSHA256: ScientificSHA256Digest,
+    public init(evidenceSHA256: ScientificSHA256Digest,
+                authorityManifestSHA256: ScientificSHA256Digest,
+                modelSHA256: ScientificSHA256Digest,
                 studySHA256: ScientificSHA256Digest, issuedAt: Date, claim: String) {
         self.schemaVersion = 1; self.evidenceSHA256 = evidenceSHA256
+        self.authorityManifestSHA256 = authorityManifestSHA256
         self.modelSHA256 = modelSHA256; self.studySHA256 = studySHA256
         self.issuedAt = issuedAt; self.claim = claim
     }
 }
 
 public enum CultureTwinQualifier {
+    /// Intentionally refuses digest-only certification. Call `qualifyVerified` after re-hashing
+    /// the authority manifest from disk.
     public static func qualify(_ source: CultureTwinQualificationEvidence,
                                issuedAt: Date) throws -> CultureTwinQualificationCertificate {
+        _ = try source.validated()
+        _ = issuedAt
+        throw CultureTwinError.invalid("Phase 6 certification requires file-backed authority verification")
+    }
+
+    public static func qualifyVerified(
+        _ source: CultureTwinQualificationEvidence,
+        manifest sourceManifest: CultureQualificationAuthorityManifest,
+        verification sourceVerification: CultureQualificationAuthorityVerification,
+        issuedAt: Date
+    ) throws -> CultureTwinQualificationCertificate {
         let evidence = try source.validated()
-        guard evidence.passed else {
-            throw CultureTwinError.invalid("Phase 6 exit gate not satisfied")
+        let manifest = try sourceManifest.validated()
+        let evidenceDigest = try evidence.digest()
+        let manifestDigest = try manifest.digest()
+        guard evidence.passed,
+              sourceVerification.schemaVersion == 1,
+              sourceVerification.passed,
+              sourceVerification.evidenceSHA256 == evidenceDigest,
+              sourceVerification.manifestSHA256 == manifestDigest,
+              Set(sourceVerification.verifiedRoles) == Set(CultureQualificationArtifactRole.allCases),
+              sourceVerification.checkedAt <= issuedAt else {
+            throw CultureTwinError.invalid("Phase 6 verified exit gate not satisfied")
         }
         return CultureTwinQualificationCertificate(
-            evidenceSHA256: try evidence.digest(),
+            evidenceSHA256: evidenceDigest,
+            authorityManifestSHA256: manifestDigest,
             modelSHA256: evidence.modelSHA256,
             studySHA256: evidence.studySHA256,
             issuedAt: issuedAt,
-            claim: "This bounded neural-culture twin passed preregistered synthetic recovery, predictive-calibration, required-baseline, held-out stimulation/electrode, independent-culture/donor, and CPU/Metal conclusion gates."
+            claim: "This bounded neural-culture twin passed preregistered synthetic recovery, predictive-calibration, required-baseline, held-out stimulation/electrode, independent-culture/donor, CPU/Metal conclusion, and file-backed evidence-integrity gates."
         )
     }
 }

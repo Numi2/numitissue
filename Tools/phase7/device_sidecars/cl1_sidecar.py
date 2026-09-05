@@ -1,221 +1,331 @@
 #!/usr/bin/env python3
-"""CL1 device-local sidecar for NumiTissue Phase 7.
+"""Bounded CL SDK SIMULATOR bridge; intentionally refuses physical CL1 before cl.open.
 
-Uses the documented CL API only. The sidecar is intentionally single-session and requires an
-operator-issued arm lease before any stimulation. It never converts a late request into immediate
-stimulation. JSON lines are read from stdin and responses are written to stdout.
-
-This source must be reviewed and exercised against the CL SDK Simulator before a physical CL1.
+Public CL API does not establish the independently measured voltage, device-death watchdog,
+atomic deadline rejection and operator authority required by GuardedNeuralCultureSession.
+A Python event-loop timeout is NOT autonomous hardware shutdown. This bridge tests SDK semantics;
+no flag, JSON boolean, environment variable or manual Swift method enables physical operation.
 """
 from __future__ import annotations
 
+import hashlib
+import importlib
 import json
+import math
 import os
+import select
 import sys
 import time
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-import cl
-from cl import ChannelSet, StimDesign
-
 MAX_LINE = 1_048_576
-MAX_CHANNELS_PER_REQUEST = 64
-MAX_PHASES = 6
+MAX_REQUESTS = 10_000
+MAX_READ_FRAMES = 250_000
+MAX_UINT64 = (1 << 64) - 1
 
 
 def fail(code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "code": code, "message": message}
 
 
-def now_monotonic_ns() -> int:
-    return time.monotonic_ns()
+def integer(value: Any, name: str, low: int = 0, high: int = MAX_UINT64) -> int:
+    if type(value) is not int or not low <= value <= high:
+        raise ValueError(f"invalid integer {name}")
+    return value
+
+
+def encoded(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
 
 @dataclass
 class State:
+    sdk: Any
     neurons: Any
     identity: dict[str, Any]
+    phase: str = "idle"
     armed_until_frame: int = 0
     watchdog_ns: int = 0
-    last_refresh_host_ns: int = 0
-    stopped: bool = True
+    last_refresh_ns: int = 0
+    last_frame: int = 0
     requests: dict[str, dict[str, Any]] = field(default_factory=dict)
-    observed_stims: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    channel_until: dict[int, int] = field(default_factory=dict)
+
+    def require_simulator(self) -> None:
+        if self.sdk.is_simulator() is not True:
+            self.phase = "stopped"
+            raise RuntimeError("physical CL1 is unsupported by this simulator bridge")
 
     def device_frame(self) -> int:
-        value = int(self.neurons.timestamp())
-        if value < 0:
-            raise RuntimeError("negative CL1 timestamp")
+        value = integer(int(self.neurons.timestamp()), "device timestamp")
+        if value < self.last_frame:
+            self.phase = "stopped"
+            raise RuntimeError("device clock reset; new process/session required")
+        self.last_frame = value
         return value
 
     def frame_us(self) -> int:
         value = float(self.neurons.get_frame_duration_us())
-        rounded = int(round(value))
-        if value <= 0 or abs(value - rounded) > 1e-9:
-            raise RuntimeError("CL1 frame duration is not an integral microsecond value")
-        return rounded
+        if not math.isfinite(value) or value <= 0 or value > 1_000_000 or not value.is_integer():
+            raise RuntimeError("unrepresentable CL frame duration")
+        return int(value)
 
-    def enforce_watchdog(self) -> None:
-        if self.stopped:
-            return
-        if self.watchdog_ns <= 0 or now_monotonic_ns() - self.last_refresh_host_ns > self.watchdog_ns:
-            self.emergency_stop("device-local host watchdog expired")
-            raise RuntimeError("watchdog expired")
+    def channel_count(self) -> int:
+        return integer(int(self.neurons.get_channel_count()), "channels", 1, 4096)
 
-    def emergency_stop(self, reason: str) -> None:
-        # CL API interrupt clears existing and pending stimulation on selected channels.
-        # Interrupt every reported channel; never assume context close stops the device.
-        count = int(self.neurons.get_channel_count())
+    def stop(self, reason: str) -> dict[str, Any]:
+        self.phase = "stopped"  # Latch before any possibly failing SDK operation.
+        self.armed_until_frame = 0
+        errors = []
+        try:
+            count = self.channel_count()
+        except Exception as exc:
+            return {"ok": False, "stop_confirmed": False, "code": "channel_query_failed", "message": str(exc)}
         for channel in range(count):
             try:
                 self.neurons.interrupt(channel)
-            except Exception:
-                pass
-        self.stopped = True
-        self.armed_until_frame = 0
-        self.last_refresh_host_ns = 0
+            except Exception as exc:
+                errors.append({"channel": channel, "error": str(exc)[:256]})
+        return {"ok": not errors, "stop_confirmed": not errors,
+                "simulator": True, "physical_stop_verified": False,
+                "code": "interrupt_failed" if errors else None,
+                "message": reason[:1024], "errors": errors, "frame": self.last_frame}
+
+    def check_expiry(self) -> None:
+        if self.phase != "armed":
+            return
+        if (time.monotonic_ns() - self.last_refresh_ns >= self.watchdog_ns
+                or self.device_frame() >= self.armed_until_frame):
+            self.stop("simulator host timeout or arm expiry")
+            raise RuntimeError("simulator lease expired; rearming is prohibited")
 
 
-def parse_schedule(payload: dict[str, Any], state: State) -> tuple[list[tuple[int, StimDesign]], int]:
+def parse_schedule(payload: dict[str, Any], state: State) -> tuple[list[tuple[int, Any]], int, int, list[dict[str, int]]]:
     pulses = payload.get("pulses")
-    if not isinstance(pulses, list) or not pulses or len(pulses) > MAX_CHANNELS_PER_REQUEST:
-        raise ValueError("bounded nonempty pulses required")
+    if not isinstance(pulses, list) or not 1 <= len(pulses) <= 64:
+        raise ValueError("1..64 pulses required")
+    starts: set[int] = set()
+    channels: set[int] = set()
+    operations = []
+    expected = []
+    latest = 0
     frame_us = state.frame_us()
-    operations: list[tuple[int, StimDesign]] = []
-    first_frame: int | None = None
     for pulse in pulses:
-        channel = int(pulse["channel"])
-        if channel < 0 or channel >= int(state.neurons.get_channel_count()):
-            raise ValueError("channel outside device range")
-        at_frame = int(pulse["timestamp_frames"])
+        if not isinstance(pulse, dict) or set(pulse) != {"channel", "timestamp_frames", "phases"}:
+            raise ValueError("unknown or missing pulse fields")
+        channel = integer(pulse["channel"], "channel", 0, state.channel_count() - 1)
+        if channel in channels:
+            raise ValueError("duplicate channel would serialize SDK operations rather than stimulate concurrently")
+        channels.add(channel)
+        start = integer(pulse["timestamp_frames"], "start frame")
+        starts.add(start)
         phases = pulse["phases"]
-        if not isinstance(phases, list) or len(phases) not in (2, 4, 6) or len(phases) > MAX_PHASES:
-            raise ValueError("CL1 StimDesign requires 2, 4 or 6 width/current arguments")
-        args: list[float | int] = []
+        # StimDesign accepts width/current pairs; a biphasic pulse is TWO phases, FOUR arguments.
+        if not isinstance(phases, list) or len(phases) not in (2, 3):
+            raise ValueError("only balanced bi/triphasic simulator waveforms are supported")
+        arguments = []
+        duration = 0
+        signed = absolute = 0.0
         for phase in phases:
-            width_us = int(phase["duration_us"])
-            current_ua = float(phase["current_ua"])
-            if width_us <= 0 or width_us % 20 != 0 or not (-3.0 <= current_ua <= 3.0):
-                raise ValueError("CL1 phase outside documented width/current representation")
-            args.extend((width_us, current_ua))
-        design = StimDesign(*args)
-        operations.append((channel, design))
-        first_frame = at_frame if first_frame is None else min(first_frame, at_frame)
-        # Current CL API StimPlan has one run timestamp for its queued operations. NumiTissue
-        # therefore admits only schedules whose pulses share one start frame in this adapter.
-        if at_frame != first_frame:
-            raise ValueError("multi-start schedule requires multiple independently admitted requests")
-    assert first_frame is not None
-    if first_frame * frame_us < 0:
-        raise ValueError("timestamp overflow")
-    return operations, first_frame
+            if not isinstance(phase, dict) or set(phase) != {"duration_us", "current_ua"}:
+                raise ValueError("phase fields")
+            width = integer(phase["duration_us"], "phase width", 20, 20_000)
+            current = phase["current_ua"]
+            if type(current) not in (float, int) or not math.isfinite(current) or abs(current) > 3.0 or width % 20:
+                raise ValueError("unrepresentable simulator waveform")
+            current = float(current)
+            duration += width
+            signed += current * width
+            absolute += abs(current) * width
+            arguments.extend((width, current))
+        if absolute == 0 or abs(signed) > absolute * 1e-6:
+            raise ValueError("simulator pulse must be charge balanced")
+        end = start + (duration + frame_us - 1) // frame_us
+        if end > MAX_UINT64 or start < state.channel_until.get(channel, 0):
+            raise ValueError("timestamp overflow or channel overlap")
+        latest = max(latest, end)
+        operations.append((channel, state.sdk.StimDesign(*arguments)))
+        expected.append({"timestamp": start, "channel": channel})
+    if len(starts) != 1:
+        raise ValueError("one exact shared start frame per request; no reordered or mixed starts")
+    return operations, next(iter(starts)), latest, sorted(expected, key=lambda x: x["channel"])
+
+
+def response_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in item.items() if key != "payload_sha256"}
 
 
 def handle(state: State, request: dict[str, Any]) -> dict[str, Any]:
+    state.require_simulator()
+    if not isinstance(request, dict):
+        raise ValueError("request must be an object")
     op = request.get("op")
     if op == "identity":
         return {"ok": True, "identity": state.identity, "frame": state.device_frame(),
-                "frame_duration_us": state.frame_us(), "channels": int(state.neurons.get_channel_count()),
-                "simulator": bool(cl.is_simulator())}
-    if op == "arm":
-        if not bool(request.get("operator_approved", False)):
-            return fail("approval_required", "operator approval is required")
-        until = int(request["armed_until_frame"])
-        watchdog_ns = int(request["watchdog_ns"])
+                "frame_duration_us": state.frame_us(), "channels": state.channel_count(),
+                "simulator": True, "physical_stimulation_supported": False,
+                "autonomous_hardware_watchdog": False, "measured_voltage": None,
+                "measured_temperature": None}
+    if op == "arm-simulator":
+        if state.phase != "idle":
+            return fail("latched", "arming is one-shot per simulator session")
+        until = integer(request.get("armed_until_frame"), "arm expiry")
+        watchdog = integer(request.get("watchdog_ns"), "simulator timeout", 1_000_000, 1_000_000_000)
         now = state.device_frame()
-        if until <= now or watchdog_ns <= 0 or watchdog_ns > 1_000_000_000:
-            return fail("invalid_lease", "bounded future lease and <=1s watchdog required")
+        if until <= now or (until - now) * state.frame_us() > 60_000_000:
+            return fail("invalid_lease", "simulator lease must be future and bounded to 60 seconds")
+        state.phase = "armed"
         state.armed_until_frame = until
-        state.watchdog_ns = watchdog_ns
-        state.last_refresh_host_ns = now_monotonic_ns()
-        state.stopped = False
-        return {"ok": True, "frame": now, "armed_until_frame": until, "watchdog_ns": watchdog_ns}
-    if op == "watchdog.refresh":
-        state.enforce_watchdog()
-        if state.device_frame() >= state.armed_until_frame:
-            state.emergency_stop("arm lease expired")
-            return fail("lease_expired", "arm lease expired")
-        state.last_refresh_host_ns = now_monotonic_ns()
-        return {"ok": True, "frame": state.device_frame(), "armed_until_frame": state.armed_until_frame,
-                "watchdog_ns": state.watchdog_ns}
+        state.watchdog_ns = watchdog
+        state.last_refresh_ns = time.monotonic_ns()
+        return {"ok": True, "simulator": True, "frame": now, "armed_until_frame": until}
     if op == "stop":
-        state.emergency_stop(str(request.get("reason", "requested")))
-        return {"ok": True, "stop_confirmed": True, "frame": state.device_frame()}
-    if op == "stim.status":
-        rid = str(request["id"])
+        return state.stop(str(request.get("reason", "requested")))
+    if op == "watchdog.refresh":
+        state.check_expiry()
+        if state.phase != "armed":
+            return fail("latched", "not armed")
+        state.last_refresh_ns = time.monotonic_ns()
+        return {"ok": True, "frame": state.device_frame(), "armed_until_frame": state.armed_until_frame}
+    if op in ("stim.status", "stim.observe"):
+        rid = str(uuid.UUID(str(request["id"])))
         item = state.requests.get(rid)
         if item is None:
-            return fail("unknown_request", "request id is unknown")
-        return {"ok": True, **item}
-    if op == "stim.submit":
-        state.enforce_watchdog()
-        rid = str(uuid.UUID(str(request["id"])))
-        if rid in state.requests:
-            # Idempotency is status lookup, never a second SDK call.
-            return {"ok": True, **state.requests[rid]}
-        operations, at_frame = parse_schedule(request, state)
+            return fail("unknown_request", "request ID is unknown; never resubmit after process restart")
+        if op == "stim.status" or item["status"] == "executed":
+            return {"ok": True, **response_item(item)}
         now = state.device_frame()
-        minimum_lead_frames = (80 + state.frame_us() - 1) // state.frame_us()
-        if at_frame < now + minimum_lead_frames or at_frame >= state.armed_until_frame:
-            return fail("late_or_unarmed", "request is late or outside arm lease; not submitted")
+        start = item["scheduled_frame"]
+        if now < item["end_frame"]:
+            return {"ok": True, **response_item(item)}
+        count = now - start  # CL stop_timestamp is exclusive; do not block awaiting a future frame.
+        if not 1 <= count <= MAX_READ_FRAMES:
+            return fail("analysis_window_unavailable", "bounded recorded delivery window is unavailable")
+        analysis = state.neurons.read(count, start, analysis=True)
+        if int(analysis.start_timestamp) != start or int(analysis.stop_timestamp) != now:
+            return fail("analysis_window_mismatch", "SDK returned a different analysis interval")
+        observed = [{"timestamp": int(x.timestamp), "channel": int(x.channel)} for x in analysis.stims]
+        # Every requested electrode must occur exactly once at the requested timestamp. Unrelated
+        # stims, duplicate stims and partial delivery cannot authorize an executed receipt.
+        actual = Counter((x["timestamp"], x["channel"]) for x in observed)
+        expected = Counter((x["timestamp"], x["channel"]) for x in item["expected_stims"])
+        item["observed_stims"] = observed
+        item["status"] = "executed" if actual == expected else "unknown"
+        item["delivery"] = "sdk_event_match_only" if actual == expected else "missing_extra_or_mismatched_events"
+        return {"ok": True, **response_item(item)}
+    if op == "stim.submit":
+        rid = str(uuid.UUID(str(request["id"])))
+        digest = hashlib.sha256(encoded({k: v for k, v in request.items() if k != "id"})).hexdigest()
+        if rid in state.requests:
+            if state.requests[rid]["payload_sha256"] != digest:
+                return fail("id_conflict", "same ID with different pulse content")
+            return {"ok": True, **response_item(state.requests[rid])}
+        state.check_expiry()
+        if state.phase != "armed":
+            return fail("latched", "simulator is not armed")
+        if len(state.requests) >= MAX_REQUESTS:
+            return fail("capacity", "session request budget exceeded")
+        operations, start, end, expected = parse_schedule(request, state)
+        deadline = integer(request.get("deadline_frame"), "completion deadline")
+        now = state.device_frame()
+        lead = (80 + state.frame_us() - 1) // state.frame_us()
+        if start < now + lead or end > deadline or end > state.armed_until_frame:
+            return fail("late_or_unarmed", "request is outside its complete waveform/lease deadline")
         plan = state.neurons.create_stim_plan()
-        channels = ChannelSet([channel for channel, _ in operations])
-        plan.channels_to_interrupt = channels
+        # Do not interrupt previous accepted work merely to submit a new plan.
         for channel, design in operations:
             plan.stim(channel, design, lead_time_us=80)
-        # CL API documents absolute StimPlan.run(at_timestamp=...). We checked it remains future.
-        plan.run(at_timestamp=at_frame)
-        state.requests[rid] = {"id": rid, "status": "accepted", "accepted_frame": now,
-                               "scheduled_frame": at_frame, "delivery": "pending_observation"}
-        return {"ok": True, **state.requests[rid]}
-    if op == "stim.observe":
-        # Reconcile from CL analysis, not merely the enqueue acknowledgement.
-        rid = str(request["id"])
-        item = state.requests.get(rid)
-        if item is None:
-            return fail("unknown_request", "request id is unknown")
-        scheduled = int(item["scheduled_frame"])
         now = state.device_frame()
-        if now <= scheduled:
-            return {"ok": True, **item}
-        analysis = state.neurons.read(max(1, now - scheduled + 1), scheduled, analysis=True)
-        observed = [{"timestamp": int(stim.timestamp), "channel": int(stim.channel)} for stim in analysis.stims]
-        item = dict(item)
-        item["observed_stims"] = observed
-        item["status"] = "executed" if observed else "unknown"
-        item["delivery"] = "observed" if observed else "not_observed_in_requested_window"
+        if start < now + lead:
+            return fail("late", "plan creation consumed the lead budget; no run call")
+        item = {"id": rid, "payload_sha256": digest, "status": "unknown", "accepted_frame": now,
+                "scheduled_frame": start, "end_frame": end, "expected_stims": expected,
+                "delivery": "submission_intent", "simulator": True}
+        # Reserve identity BEFORE the SDK call, including paths where it performs work then throws.
         state.requests[rid] = item
-        return {"ok": True, **item}
-    return fail("unknown_operation", str(op))
+        for channel, _ in operations:
+            state.channel_until[channel] = end
+        try:
+            plan.run(at_timestamp=start)
+        except Exception:
+            state.stop("SDK submission acknowledgement lost or rejected")
+            raise
+        item["status"] = "accepted"
+        item["delivery"] = "pending_sdk_event_reconciliation"
+        return {"ok": True, **response_item(item)}
+    return fail("unsupported_operation", str(op))
+
+
+def strict_json(raw: bytes) -> dict[str, Any]:
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+    def reject(value):
+        raise ValueError(f"nonfinite JSON number {value}")
+    value = json.loads(raw, object_pairs_hook=pairs, parse_constant=reject)
+    if not isinstance(value, dict):
+        raise ValueError("JSON object required")
+    return value
+
+
+def serve(state: State, fd: int = 0) -> int:
+    pending = bytearray()
+    while True:
+        try:
+            state.check_expiry()
+        except Exception:
+            pass  # Latched by check_expiry; status and stop remain available, never rearm.
+        readable, _, _ = select.select([fd], [], [], 0.01)
+        if not readable:
+            continue
+        chunk = os.read(fd, min(65_536, MAX_LINE + 1 - len(pending)))
+        if not chunk:
+            if pending:
+                print(encoded(fail("truncated_request", "EOF before newline")).decode(), flush=True)
+            return 0
+        pending.extend(chunk)
+        if len(pending) > MAX_LINE:
+            state.stop("oversized input")
+            return 65
+        while b"\n" in pending:
+            raw, _, rest = pending.partition(b"\n")
+            pending = bytearray(rest)
+            try:
+                response = handle(state, strict_json(raw))
+            except Exception as exc:
+                stopped = state.stop(f"request failed: {exc}")
+                response = {**fail("request_failed", f"{type(exc).__name__}: {exc}"),
+                            "stop_confirmed": stopped["stop_confirmed"]}
+            output = encoded(response)
+            if len(output) > MAX_LINE:
+                state.stop("response budget exceeded")
+                output = encoded(fail("response_too_large", "response exceeded budget"))
+            print(output.decode(), flush=True)
 
 
 def main() -> int:
-    attrs = cl.get_system_attributes()
-    identity = {"system_id": str(attrs.get("system_id", "")), "chip_id": str(attrs.get("chip_id", "")),
-                "cell_batch_id": str(attrs.get("cell_batch_id", "")), "hostname": str(attrs.get("hostname", ""))}
-    with cl.open(take_control=True, wait_until_recordable=True) as neurons:
-        state = State(neurons=neurons, identity=identity)
-        # Start from known no-stimulation state.
-        state.emergency_stop("sidecar startup")
+    sdk = importlib.import_module("cl")
+    # This check precedes taking control, clearing queues, opening or otherwise writing to a device.
+    if sdk.is_simulator() is not True:
+        print(encoded(fail("physical_backend_not_qualified",
+            "This bridge supports CL SDK Simulator only; independently enforced hardware interlocks are unimplemented.")).decode())
+        return 78
+    identity = dict(sdk.get_system_attributes())
+    with sdk.open(take_control=True, wait_until_recordable=True) as neurons:
+        state = State(sdk=sdk, neurons=neurons, identity=identity)
         try:
-            for raw in sys.stdin.buffer:
-                if len(raw) > MAX_LINE:
-                    print(json.dumps(fail("request_too_large", "line exceeds bound")), flush=True)
-                    continue
-                try:
-                    request = json.loads(raw)
-                    response = handle(state, request)
-                except Exception as exc:
-                    try:
-                        state.emergency_stop(f"request failure: {exc}")
-                    finally:
-                        response = fail("exception", f"{type(exc).__name__}: {exc}")
-                print(json.dumps(response, sort_keys=True, separators=(",", ":")), flush=True)
+            return serve(state)
         finally:
-            state.emergency_stop("sidecar exit")
-    return 0
+            result = state.stop("simulator sidecar exit")
+            if not result["stop_confirmed"]:
+                print(encoded(result).decode(), file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
